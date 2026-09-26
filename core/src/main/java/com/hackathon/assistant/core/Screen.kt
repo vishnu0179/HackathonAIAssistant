@@ -20,11 +20,14 @@ data class UiElement(
     val role: Role,
     /** Best human-readable label: text, else content description, else hint, else resource name. */
     val label: String,
+    /** Current text of an input when it differs from its label (e.g. typed text vs. hint). */
+    val value: String? = null,
     val clickable: Boolean = false,
     val editable: Boolean = false,
     val scrollable: Boolean = false,
     val checked: Boolean? = null,
     val selected: Boolean = false,
+    val focused: Boolean = false,
     val bounds: Bounds,
 )
 

@@ -18,7 +18,7 @@ class Assistant(
     private val voice: VoiceIO,
     private val planner: Planner,
     private val skills: SkillRegistry,
-    private val skillContext: SkillContext,
+    val skillContext: SkillContext,
 ) {
     suspend fun handle(utterance: String, clarifications: Int = 0) {
         log("user: $utterance")
