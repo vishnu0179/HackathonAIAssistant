@@ -8,6 +8,7 @@ import com.hackathon.assistant.core.Skill
 import com.hackathon.assistant.core.StepDecision
 import com.hackathon.assistant.core.UiAction
 import org.json.JSONObject
+import org.json.JSONTokener
 
 /** Prompting + output parsing on top of a [LocalLlm]. Output is schema-constrained JSON. */
 class LlmPlanner(private val llm: LocalLlm) : Planner {
@@ -72,10 +73,16 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
     private companion object { const val TAG = "LlmPlanner" }
 }
 
-/** Pulls the first {...} object out of model output (tolerates code fences and chatter). */
+/**
+ * Pulls the first parseable JSON object out of model output. Tolerates code fences, chatter
+ * and the stray `{"` prefix LiteRT-LM's constrained decoder emits (`{"{"type":"skill"}}`).
+ */
 internal fun extractJson(raw: String): JSONObject? {
-    val start = raw.indexOf('{')
-    val end = raw.lastIndexOf('}')
-    if (start < 0 || end <= start) return null
-    return runCatching { JSONObject(raw.substring(start, end + 1)) }.getOrNull()
+    var start = raw.indexOf('{')
+    while (start >= 0) {
+        val parsed = runCatching { JSONTokener(raw.substring(start)).nextValue() as? JSONObject }.getOrNull()
+        if (parsed != null && parsed.length() > 0) return parsed
+        start = raw.indexOf('{', start + 1)
+    }
+    return null
 }

@@ -21,3 +21,6 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
     testImplementation("junit:junit:4.13.2")
 }
+
+// org.json is part of Android, not the JVM unit-test classpath.
+dependencies { testImplementation("org.json:json:20250517") }
