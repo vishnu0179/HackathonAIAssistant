@@ -19,6 +19,8 @@ import java.io.File
  *   --ez dump true                                log the translated current screen (logcat -s ScreenDump)
  *   --es skill read_sms --es args "limit=5"       run ONE skill directly, no LLM (logcat -s Assistant)
  *                                                 args are "k=v;k2=v2"; see the skill's slots
+ *   --es say "hello there"                        speak with the active TTS
+ *   --ez cloud_stt true|false                     request recognition on Google cloud / on-device only
  */
 class DebugCommandReceiver : BroadcastReceiver() {
 
@@ -75,6 +77,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
                     val result = skill.execute(app.assistant.skillContext, args)
                     app.dbg("◀ result: $result")
                 }
+                // --ez cloud_stt true: Google's online recognizer when there is internet (Gboard accuracy).
+                if (intent.hasExtra("cloud_stt")) {
+                    app.setCloudStt(intent.getBooleanExtra("cloud_stt", false))
+                }
+                intent.getStringExtra("say")?.let { app.voice.speak(it) }
                 intent.getStringExtra("text")?.let { app.converse(heard = it) }
                 if (intent.getBooleanExtra("talk", false)) app.onTrigger()
             } catch (t: Throwable) {
@@ -83,3 +90,4 @@ class DebugCommandReceiver : BroadcastReceiver() {
         }
     }
 }
+

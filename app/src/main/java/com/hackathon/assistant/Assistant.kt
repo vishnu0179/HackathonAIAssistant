@@ -12,6 +12,8 @@ import com.hackathon.assistant.core.Skill
 import com.hackathon.assistant.core.SkillContext
 import com.hackathon.assistant.core.SkillRegistry
 import com.hackathon.assistant.core.SlotSpec
+import com.hackathon.assistant.core.StepStatus
+import com.hackathon.assistant.core.TaskProgress
 import com.hackathon.assistant.core.ToolSpec
 import com.hackathon.assistant.core.UiAction
 import com.hackathon.assistant.core.VoiceIO
@@ -30,6 +32,8 @@ class Assistant(
     private val planner: Planner,
     private val skills: SkillRegistry,
     val skillContext: SkillContext,
+    /** Where each step is reported in plain words, for the Jarvis card. */
+    private val progress: TaskProgress = TaskProgress.None,
 ) {
     /** Only skills usable on this device right now (e.g. WhatsApp installed and logged in). */
     private fun availableTools(): List<ToolSpec> {
@@ -53,17 +57,30 @@ class Assistant(
     private var lastSkill: String? = null
 
     suspend fun handle(utterance: String) {
+        progress.start(utterance)
+        var success = false
+        try {
+            success = runSteps(utterance)
+        } finally {
+            progress.finish(success)
+        }
+    }
+
+    /** The ReAct loop. Returns true if the request was completed. */
+    private suspend fun runSteps(utterance: String): Boolean {
         log("user: $utterance")
         lastSkill = null
         val tools = availableTools()
         val scratchpad = mutableListOf<String>()
         var doneWhen: (() -> Boolean)? = null
         repeat(MAX_STEPS) {
-            if (doneWhen?.invoke() == true) return voice.speak("Done.")
+            if (doneWhen?.invoke() == true) { voice.speak("Done."); return true }
             var state = awaitContent()
             // Android permission prompts are allowed automatically (user's standing instruction).
             if (state != null && state.packageName in PERMISSION_CONTROLLERS) {
+                val id = progress.step("Allowing a permission")
                 autoAllow(state)?.let { scratchpad += "Screen: Android permission prompt\nAction: (automatic) $it"; state = awaitContent() }
+                progress.update(id, StepStatus.DONE)
             }
             // Home-screen icons only distract the model from skills; show real app screens only.
             val screenText = when {
@@ -72,14 +89,27 @@ class Assistant(
                 state.elements.isEmpty() -> "App: ${state.appLabel ?: state.packageName} (still loading, nothing readable yet)"
                 else -> skillContext.screen.toPrompt(state)
             }
+            val stepId = progress.step("Thinking", state?.appLabel?.let { "Looking at $it" }.orEmpty())
             val step = planner.next(utterance, tools, scratchpad, screenText)
-                ?: return voice.speak("Sorry, I got confused.")
+                ?: run { progress.update(stepId, StepStatus.FAILED); voice.speak("Sorry, I got confused."); return false }
             log("step ${scratchpad.size + 1} | screen: ${step.screen} | thought: ${step.thought} | -> ${step.tool}${step.args}${if (step.final) " (final)" else ""}")
+            progress.update(
+                stepId,
+                if (step.tool in WAITS_FOR_USER) StepStatus.WAITING_FOR_USER else StepStatus.RUNNING,
+                title = stepTitle(step, state),
+                detail = step.thought.take(120),
+            )
 
             val outcome = run(step, state)
             lastSkill = step.tool.takeIf { skills.get(it) != null && outcome is Outcome.Observed && outcome.ok }
-            if (outcome is Outcome.Stop) return
+            if (outcome is Outcome.Stop) {
+                // "finish" ends the request successfully; any other stop is a cancel or a dead end.
+                val finished = step.tool == "finish"
+                progress.update(stepId, if (finished) StepStatus.DONE else StepStatus.FAILED)
+                return finished
+            }
             outcome as Outcome.Observed
+            progress.update(stepId, if (outcome.ok) StepStatus.DONE else StepStatus.FAILED)
             outcome.doneWhen?.let { doneWhen = it }
             log("   observation: ${outcome.text}")
             // The app list is large: show it for the next decision only, then collapse it.
@@ -89,13 +119,43 @@ class Assistant(
             scratchpad += "Screen: ${step.screen}\nThought: ${step.thought}\nAction: ${describe(step, state)}\nObservation: ${outcome.text}"
             // Entering an app is never the end: the next step must look at where we landed.
             if (step.final && outcome.ok && step.tool !in ENTRY_TOOLS) {
-                return voice.speak(outcome.spoken.ifBlank { "Done." })
+                voice.speak(outcome.spoken.ifBlank { "Done." })
+                return true
             }
             if (scratchpad.size >= 3 && scratchpad.takeLast(3).map { it.substringAfter("Action: ") }.distinct().size == 1) {
-                return voice.speak("I'm stuck on this screen, so I stopped.")
+                voice.speak("I'm stuck on this screen, so I stopped.")
+                return false
             }
         }
         voice.speak("That took too many steps, so I stopped.")
+        return false
+    }
+
+    /** A step in plain words for the card: "Opening WhatsApp", "Tapping “Send”", "Typing “I'm late”". */
+    private fun stepTitle(step: AgentStep, state: ScreenState?): String {
+        val id = step.args["id"]?.filter { it.isDigit() }?.toIntOrNull()
+        val label = id?.let { i -> state?.elements?.firstOrNull { it.id == i }?.label }?.take(40)
+        fun quoted(s: String?) = s?.takeIf { it.isNotBlank() }?.let { "“$it”" }.orEmpty()
+        return when (step.tool) {
+            "tap" -> "Tapping ${quoted(label)}".trim()
+            "long_press" -> "Long-pressing ${quoted(label)}".trim()
+            "type" -> "Typing ${quoted(step.args["text"]?.take(40))}".trim()
+            "enter" -> "Pressing enter"
+            "scroll" -> "Scrolling ${step.args["direction"].orEmpty()}".trim()
+            "back" -> "Going back"
+            "home" -> "Going to the home screen"
+            "list_apps" -> "Finding the app"
+            "open_link" -> "Opening the link"
+            "ask_user" -> "Asking you: ${step.args["question"].orEmpty()}".trimEnd(':', ' ')
+            "ask_choice" -> "Asking you to choose"
+            "fill_field" -> "Filling in the details"
+            "finish" -> "Answering"
+            else -> skills.get(step.tool)?.let { skill ->
+                // Skill description plus its main argument: "Open an app · WhatsApp".
+                val arg = skill.slots.firstNotNullOfOrNull { step.args[it.name]?.takeIf(String::isNotBlank) }
+                listOfNotNull(skill.description.substringBefore('.').take(48), arg?.take(32)).joinToString(" · ")
+            } ?: step.tool.replace('_', ' ').replaceFirstChar { it.uppercase() }
+        }
     }
 
     /**
@@ -444,6 +504,8 @@ class Assistant(
             ToolSpec("finish", "end the request; also use it to answer questions yourself", listOf(p("answer", "short spoken reply"))),
         )
         private val UI_TOOL_NAMES = UI_TOOLS.map { it.name }.toSet()
+        /** Tools that wait for the user to answer (shown as "waiting for you" on the card). */
+        private val WAITS_FOR_USER = setOf("ask_user", "ask_choice", "fill_field")
         private val ENTRY_TOOLS = setOf("list_apps", "open_link")
         private const val LOADING_WAIT_MS = 10_000
         private const val MAX_CHOICES = 5
