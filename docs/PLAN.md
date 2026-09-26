@@ -32,62 +32,42 @@ intents and deep links. UI navigation is the fallback for everything else. It se
 They are frozen. To change one, post in the team chat first, keep the change small, and
 push it on its own.
 
-## Ownership (one module each, so there are no merge conflicts)
+## Ownership
 
-| Who | Modules | Delivers |
+| Who | Area | Delivers |
 |---|---|---|
-| **Vishnu (+Claude)** | `:core`, `:app`, `:llm` | Orchestrator, LiteRT-LM on GPU/NPU, routing/step prompts, JSON parsing, model selection, dev console UI, demo script |
-| **Teammate B** | `:perception` | Accessibility tree → `ScreenState` translation layer, `toPrompt()`, `UiController` (tap/type/scroll/back), `awaitIdle()` |
-| **Teammate C** | `:voice`, `:actions` | Offline STT + TTS, barge-in, yes/no confirm; skill library (deep links/intents) |
+| **Vishnu (+Claude)** | All code modules: `:core`, `:app`, `:llm`, `:perception`, `:actions`, `:voice` | The working app, end to end. Commits land on `main` continuously. |
+| **Teammate B** | Model research | Which local model and backend wins on this phone (see "Model research" below) |
+| **Teammate C** | UI / UX design | Assistant overlay, dev console, onboarding and the demo look (see "UI design" below) |
 
-### Teammate B: `:perception` (hand this section to your agent)
+Current progress is tracked in [`docs/STATUS.md`](STATUS.md). Read it before starting work.
 
-1. `AccessibilityScreenReader.capture()`: walk `AssistantAccessibilityService.instance.rootInActiveWindow`
-   (and `windows` for dialogs/IME). Keep only nodes that are visible and that are either
-   clickable/editable/scrollable/checkable or carry text or a content description. Collapse
-   a clickable parent with its text-only children into ONE element whose label is the
-   children's text joined together. Drop elements that are off-screen or have zero size.
-   Assign ids 1..N in reading order (top to bottom, left to right). Keep a map from id to
-   `AccessibilityNodeInfo` for the controller.
-2. `toPrompt()`: one line per element, e.g. `[7] button "Send"`, `[3] input "Search" (focused)`,
-   `[12] list (scrollable)`. Header line: app label and package. Target: < 1,500 chars
-   for typical screens. Truncate long labels to 60 chars.
-3. `AccessibilityUiController.perform()`: resolve id → node. Tap = `ACTION_CLICK` on the node or its
-   nearest clickable ancestor, falling back to a `dispatchGesture` tap at the bounds center.
-   Type = `ACTION_SET_TEXT`. Scroll = `ACTION_SCROLL_FORWARD/BACKWARD`, falling back to a swipe
-   gesture. Back/Home/Notifications = `performGlobalAction`.
-4. `awaitIdle()`: return once no content-changed events have arrived for 300 ms, or on timeout.
-5. **Test without the LLM:** add a debug broadcast (or a unit test with fake nodes) that dumps
-   `toPrompt()` for the current screen to logcat. Check it on WhatsApp, YouTube, Settings,
-   Chrome, Maps and the Play Store. Commit sample dumps to `docs/screens/` so the prompt
-   work can use them.
-6. Stretch goal: per-app adapters (`AppAdapter` for WhatsApp/YouTube) that rename cryptic
-   elements, e.g. `id/send` → "Send".
+### Teammate B: model research (hand this section to your agent)
+Goal: pick the best on-device model and backend for (a) routing a request to a skill and
+(b) choosing one UI action per step, within ~2 s per call on this SM8850 phone.
+- Candidates from `litert-community` on Hugging Face (all ungated `.litertlm`): Gemma 4 E2B/E4B/12B
+  (GPU builds), Qwen3.5-4B (mixed int4), Agents-A1-4B, Ministral-3-3B, LFM2.5-2.6B. An NPU build for
+  SM8850 would be the prize. Only `gemma-4-E2B-it_qualcomm_sm8750` exists right now; check whether
+  it runs on SM8850 or whether AI Hub / QNN can compile one.
+- Benchmark with our real prompts on the phone. Push a model to
+  `/sdcard/Android/data/com.hackathon.assistant/files/models/`, then run
+  `adb shell am broadcast -a com.hackathon.assistant.COMMAND -p com.hackathon.assistant --es bench <file>.litertlm`
+  and read `adb logcat -s LlmBenchmark LiteRtLlm LlmPlanner`.
+- Deliver `docs/MODELS.md`: a table of model, backend, load time, route ms, step ms, and
+  correctness on the benchmark cases, plus a recommendation.
+- Stretch goals: on-device STT options better than Android's recognizer for Indian English
+  (Whisper / Moonshine / sherpa-onnx / VibeVoice-ASR on litert-community), and TTS voices (Kokoro).
 
-### Teammate C: `:voice` + `:actions` (hand this section to your agent)
-
-**Voice** (`AndroidVoiceIO`):
-1. `speak()`: `TextToSpeech`. Suspend until `onDone`. Prefer an offline voice (check
-   `voice.isNetworkConnectionRequired`).
-2. `listen()`: `SpeechRecognizer` on the main thread with
-   `RecognizerIntent.EXTRA_PREFER_OFFLINE = true`. If
-   `SpeechRecognizer.isOnDeviceRecognitionAvailable()`, use `createOnDeviceSpeechRecognizer`.
-   Update `state` (LISTENING/SPEAKING/IDLE).
-3. `confirm()`: ask, then match yes/yeah/sure/go ahead/haan and no/cancel/stop/nahi.
-4. `stop()`: cancel both, for barge-in.
-5. Earcons: short start/stop listening beeps (`ToneGenerator`).
-6. Stretch goal: offline wake word ("Hey …") with sherpa-onnx KWS, and Whisper/sherpa-onnx STT
-   if the built-in recognizer is weak on Indian English.
-
-**Skills** (`:actions`; copy the `OpenAppSkill` pattern and register each one in `DefaultSkillRegistry`):
-`call_contact`, `send_sms`, `send_whatsapp` (`https://wa.me/<num>?text=` or `ACTION_SEND` +
-`setPackage("com.whatsapp")`; `Risk.CONFIRM`), `set_alarm` / `set_timer` (`AlarmClock`),
-`navigate_to` (`google.navigation:q=`), `web_search`, `play_youtube` (search deep link),
-`open_settings_panel` (wifi/bluetooth/volume `Settings.Panel`), `toggle_flashlight`
-(`CameraManager.setTorchMode`), `take_photo` / `take_selfie`, `create_calendar_event`,
-`read_notifications`, `battery_status`, `what_time`. Contact lookup (name → number) goes in
-a shared helper with fuzzy matching. Every skill ships 3+ `examples`. Those examples are
-also our routing eval set.
+### Teammate C: UI design (hand this section to your agent)
+Voice-only for the user, but judges watch the screen. Design:
+- **Assistant overlay**: a floating orb or edge glow over other apps showing
+  listening/thinking/speaking, the live transcript, and the current step ("Tapping *Send*").
+- **Dev console** (in-app): transcript, translated screen (`toPrompt()` output), last prompt and
+  response, latency. Must be readable when mirrored through Office Kit.
+- **Onboarding**: mic permission, accessibility service, default-assistant role, model download status.
+- Deliver Figma or Compose mockups plus a colour/typography spec in `docs/UI.md`. Compose code
+  goes in `app/src/main/java/com/hackathon/assistant/ui/` (that package only, to avoid conflicts).
+  Read `VoiceIO.state` (a `StateFlow<VoiceState>`) for the animation state.
 
 ### Vishnu + Claude: `:llm` + `:app`
 - `LiteRtLlm`: load `.litertlm` from `getExternalFilesDir("models")` (push it with adb). Try
