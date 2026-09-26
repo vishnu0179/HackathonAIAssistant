@@ -1,250 +1,233 @@
 package com.hackathon.assistant.voice
 
 import android.content.Context
-import android.content.Intent
-import android.media.AudioManager
-import android.media.ToneGenerator
-import android.os.Build
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
+import android.os.SystemClock
 import android.util.Log
-import com.hackathon.assistant.core.VoiceIO
+import com.hackathon.assistant.core.TaskStep
 import com.hackathon.assistant.core.VoiceState
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import java.util.Locale
-import java.util.UUID
-import kotlin.coroutines.resume
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.launch
 
 /**
- * On-device speech in/out: Android's on-device recognizer (Android System Intelligence) and
- * Google TTS with an offline voice. Nothing leaves the phone.
+ * Speech in/out on Google's on-device recognizer and offline Google TTS, through
+ * [GoogleSpeechRecognizer] and [GoogleTextToSpeech]. Nothing leaves the phone. Publishes
+ * [state], mic [level] and [captions] for the Jarvis card.
  */
-class AndroidVoiceIO(private val context: Context) : VoiceIO {
+class AndroidVoiceIO(
+    context: Context,
+    val stt: GoogleSpeechRecognizer = GoogleSpeechRecognizer(context),
+    val tts: GoogleTextToSpeech = GoogleTextToSpeech(context),
+) : AssistantVoice {
     private val _state = MutableStateFlow(VoiceState.IDLE)
     override val state: StateFlow<VoiceState> = _state
+    private val _level = MutableStateFlow(0f)
+    override val level: StateFlow<Float> = _level
+    private val _captions = MutableStateFlow(Captions())
+    override val captions: StateFlow<Captions> = _captions
+    override val steps: StateFlow<List<TaskStep>> = MutableStateFlow(emptyList())
 
-    private var tts: TextToSpeech? = null
-    private val ttsReady = CompletableDeferred<Boolean>()
-    private var recognizer: SpeechRecognizer? = null
-    private val tones by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 60) }
+    /** Words the recognizer should favour (contact and app names). */
+    @Volatile var hints: List<String> = emptyList()
 
-    /** Lets the orchestrator show THINKING between listening and speaking. */
-    fun setThinking(thinking: Boolean) {
+    /** Recognizer settings for requests; tuned for short spoken commands. */
+    var listenOptions = ListenOptions(completeSilenceMs = 1_800, possiblyCompleteSilenceMs = 1_400)
+
+    private var voiceChosen = false
+
+    override fun setThinking(thinking: Boolean) {
         if (thinking) _state.value = VoiceState.THINKING
         else if (_state.value == VoiceState.THINKING) _state.value = VoiceState.IDLE
     }
 
-    // ---- speaking -------------------------------------------------------------------------
-
-    private suspend fun ensureTts(): TextToSpeech? {
-        if (tts == null) withContext(Dispatchers.Main) {
-            tts = TextToSpeech(context) { status -> ttsReady.complete(status == TextToSpeech.SUCCESS) }
-        }
-        if (!ttsReady.await()) return null
-        return tts!!.also { configureVoice(it) }
+    /** Shows a short status line on the card, e.g. "Didn't catch that". */
+    fun showNotice(text: String) {
+        _captions.value = Captions(notice = text)
     }
 
-    private var voiceConfigured = false
-
-    /** Prefers an offline Indian-English voice, then any offline English voice. */
-    private fun configureVoice(t: TextToSpeech) {
-        if (voiceConfigured) return
-        voiceConfigured = true
-        val offline = t.voices.orEmpty().filter { !it.isNetworkConnectionRequired && it.locale.language == "en" }
-        val pick = offline.firstOrNull { it.locale.country == "IN" } ?: offline.firstOrNull { it.locale.country == "US" }
-        if (pick != null) t.voice = pick else t.language = Locale("en", "IN")
-        t.setSpeechRate(1.05f)
-        Log.i(TAG, "tts voice: ${t.voice?.name}")
-    }
-
-    override suspend fun speak(text: String) {
-        if (text.isBlank()) return
-        Log.i(TAG, "speak: $text")
-        val t = ensureTts() ?: return
-        _state.value = VoiceState.SPEAKING
-        try {
-            suspendCancellableCoroutine { cont ->
-                val id = UUID.randomUUID().toString()
-                t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) = Unit
-                    override fun onDone(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
-                    override fun onStop(utteranceId: String?, interrupted: Boolean) { if (cont.isActive) cont.resume(Unit) }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { if (cont.isActive) cont.resume(Unit) }
-                })
-                t.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
-                cont.invokeOnCancellation { t.stop() }
-            }
-        } finally {
-            _state.value = VoiceState.IDLE
-        }
+    override fun showHeard(text: String) {
+        _captions.value = Captions(heard = text, heardFinal = true)
     }
 
     // ---- listening ------------------------------------------------------------------------
 
+    /**
+     * Listens for one request, until the user has finished speaking.
+     *
+     * Google's recognizer ends a session at every pause, so sessions run back to back and their
+     * sentences are joined. The request ends when the user has been quiet for [REQUEST_DONE_MS]
+     * after speaking, or when [timeoutMs] passes with nothing said (sessions are re-opened until
+     * then, so someone who answers a beat late is still heard). Transient recognizer errors
+     * (busy, disconnected) are retried. Timing runs on our own clock, not the recognizer's events.
+     */
     override suspend fun listen(timeoutMs: Long): String? {
-        val result = withTimeoutOrNull(timeoutMs + 4_000) { recognizeOnce(timeoutMs) }
-        if (result == null) withContext(Dispatchers.Main) { recognizer?.cancel() }
-        _state.value = VoiceState.IDLE
-        Log.i(TAG, "heard: $result")
-        return result?.takeIf { it.isNotBlank() }
-    }
-
-    /**
-     * Tries languages in order until one has an offline model: en-IN handles Indian names and
-     * accents best, but its pack may not be installed yet, in which case we request it and fall
-     * back to en-US. The working language is remembered.
-     */
-    /**
-     * The on-device recognizer closes a session after ~3 s without speech. Re-open the mic until
-     * the caller's full [timeoutMs] has passed, so people who answer a beat late are still heard.
-     */
-    private suspend fun recognizeOnce(timeoutMs: Long): String? {
-        val deadline = android.os.SystemClock.uptimeMillis() + timeoutMs
-        var first = true
-        while (true) {
-            val left = deadline - android.os.SystemClock.uptimeMillis()
-            if (!first && left < MIN_SESSION_MS) return null
-            recognizeSession(if (first) timeoutMs else left, beep = first)?.let { return it }
-            first = false
+        val committed = StringBuilder()
+        var live = Captions()
+        val startedAt = SystemClock.uptimeMillis()
+        var lastWordAt = startedAt
+        var retries = 0
+        _captions.value = Captions()
+        fun said() = committed.isNotEmpty() || live.heard.isNotBlank() || live.pending.isNotBlank()
+        fun publish(c: Captions) {
+            live = c
+            _captions.value = c.copy(heard = listOf(committed.toString(), c.heard).filter { it.isNotBlank() }.joinToString(" "))
         }
+        fun commitLive() {
+            val words = listOf(live.heard, live.pending).joinToString(" ").trim()
+            if (words.isNotEmpty()) { if (committed.isNotEmpty()) committed.append(' '); committed.append(words) }
+            live = Captions()
+        }
+        try {
+            session@ while (true) {
+                var finished = false
+                val ticks = flow { while (true) { delay(100); emit(Unit) } }
+                merge(stt.listen(listenOptions.copy(biasingStrings = hints)), ticks).takeWhile { e ->
+                    var more = true
+                    when (e) {
+                        Unit -> {
+                            val now = SystemClock.uptimeMillis()
+                            if (said() && now - lastWordAt > REQUEST_DONE_MS) { finished = true; more = false }
+                            if (!said() && now - startedAt > timeoutMs) { finished = true; more = false }
+                        }
+                        SpeechEvent.Ready -> _state.value = VoiceState.LISTENING
+                        SpeechEvent.SpeechStarted -> publish(live.copy(userSpeaking = true))
+                        SpeechEvent.SpeechEnded -> publish(live.copy(userSpeaking = false))
+                        is SpeechEvent.Level -> _level.value = e.value
+                        is SpeechEvent.Partial -> {
+                            lastWordAt = SystemClock.uptimeMillis()
+                            publish(Captions(heard = e.stable, pending = e.unstable, userSpeaking = true))
+                        }
+                        is SpeechEvent.Final -> {
+                            e.text.trim().takeIf { it.isNotEmpty() }?.let {
+                                if (committed.isNotEmpty()) committed.append(' ')
+                                committed.append(it)
+                                lastWordAt = SystemClock.uptimeMillis()
+                            }
+                            publish(Captions())
+                            more = false
+                        }
+                        is SpeechEvent.Error -> {
+                            commitLive() // words shown but not finalised still count
+                            publish(Captions())
+                            when {
+                                e.error == SpeechError.CANCELLED -> finished = true
+                                e.error.isSilence || e.error.isLanguageMissing -> Unit // re-open until the timeout
+                                e.error.isContention && retries++ < MAX_RETRIES -> Unit // busy / disconnected: retry
+                                else -> { Log.w(TAG, "recognizer: ${e.error}"); finished = true }
+                            }
+                            more = false
+                        }
+                        else -> Unit
+                    }
+                    more
+                }.collect {}
+                if (finished) break
+                // A session ended at a pause: done if they've been quiet long enough (or never spoke).
+                val now = SystemClock.uptimeMillis()
+                if (said() && now - lastWordAt > REQUEST_DONE_MS) break
+                if (!said() && now - startedAt > timeoutMs) break
+                if (retries > 0) delay(RETRY_DELAY_MS)
+            }
+        } finally {
+            _level.value = 0f
+            if (_state.value == VoiceState.LISTENING) _state.value = VoiceState.IDLE
+        }
+        commitLive() // a sentence still being spoken when we stopped counts too
+        val result = committed.toString().trim().takeIf { it.isNotEmpty() }
+        _captions.value = if (result != null) Captions(heard = result, heardFinal = true) else Captions(notice = "Didn't catch that")
+        Log.i(TAG, "heard [${stt.activeLanguage}]: $result")
+        return result
     }
 
-    private suspend fun recognizeSession(timeoutMs: Long, beep: Boolean): String? = withContext(Dispatchers.Main) {
-        beepOnReady = beep
-        var transientRetries = 0
-        var i = languageIndex
-        while (i < LANGUAGES.size) {
-            val lang = LANGUAGES[i]
-            when (val heard = recognize(timeoutMs, lang)) {
-                is Heard.Text -> return@withContext heard.text
-                Heard.Nothing -> return@withContext null
-                // Recognizer still busy/closing right after TTS or a previous session: retry.
-                Heard.Transient -> {
-                    if (transientRetries++ >= 2) return@withContext null
-                    kotlinx.coroutines.delay(600)
+    // ---- speaking -------------------------------------------------------------------------
+
+    override suspend fun speak(text: String) {
+        if (text.isNotBlank()) speakStream(flowOf(text))
+    }
+
+    override suspend fun speakStream(deltas: Flow<String>): String {
+        if (!voiceChosen) { voiceChosen = true; tts.selectVoice(); tts.rate = 1.05f }
+        val reply = StringBuilder()
+        _captions.value = _captions.value.copy(reply = "", spokenUpTo = -1, notice = "")
+        val restoreVolume = tts.ensureAudible() // muted media would make the whole reply silent
+        try {
+            coroutineScope {
+                // Sentences go to TTS in order while later deltas are still arriving.
+                val sentences = Channel<Pair<Int, String>>(Channel.UNLIMITED)
+                val speaker = launch { for ((start, sentence) in sentences) speakSentence(sentence, start) }
+                var queued = 0
+                deltas.collect { d ->
+                    reply.append(d)
+                    _captions.value = _captions.value.copy(reply = reply.toString())
+                    while (true) {
+                        val end = sentenceEnd(reply, queued) ?: break
+                        sentences.send(queued to reply.substring(queued, end))
+                        queued = end
+                    }
                 }
-                Heard.LanguageUnavailable -> {
-                    requestDownload(lang)
-                    languageIndex++
-                    i++
-                }
+                if (queued < reply.length) sentences.send(queued to reply.substring(queued))
+                sentences.close()
+                speaker.join()
             }
+        } finally {
+            restoreVolume?.invoke()
+            _captions.value = _captions.value.copy(spokenUpTo = -1)
+            _state.value = VoiceState.IDLE
         }
-        languageIndex = 0
-        null
+        Log.i(TAG, "said: $reply")
+        return reply.toString()
     }
 
-    private var languageIndex = 0
-
-    /** Only the first session of a listen() beeps; silent re-opens don't. */
-    private var beepOnReady = true
-
-    private fun requestDownload(lang: String) {
-        if (Build.VERSION.SDK_INT < 33 || !SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) return
-        runCatching {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context).triggerModelDownload(recognizerIntent(lang, 5_000))
-            Log.i(TAG, "requested on-device speech model for $lang")
+    /** Speaks one sentence that starts at [offset] in the reply, moving the card's highlight with it. */
+    private suspend fun speakSentence(sentence: String, offset: Int) {
+        if (sentence.isBlank()) return
+        _state.value = VoiceState.SPEAKING
+        tts.speak(sentence, SpeakOptions(flush = false)).collect { e ->
+            if (e is TtsEvent.Range) _captions.value = _captions.value.copy(spokenUpTo = offset + e.end)
         }
+        _captions.value = _captions.value.copy(spokenUpTo = offset + sentence.length)
     }
 
-    private sealed interface Heard {
-        data class Text(val text: String) : Heard
-        data object Nothing : Heard
-        data object LanguageUnavailable : Heard
-        data object Transient : Heard
-    }
-
-    private val useOnDevice by lazy {
-        Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-    }
-
-    /**
-     * ONE recognizer for the app's lifetime. Destroying and recreating it per utterance
-     * disconnects the shared on-device service, so the next session fails with
-     * ERROR_SERVER_DISCONNECTED (11) and then ERROR_RECOGNIZER_BUSY (8).
-     */
-    private fun recognizer(): SpeechRecognizer = recognizer ?: (
-        if (useOnDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        else SpeechRecognizer.createSpeechRecognizer(context)
-        ).also { recognizer = it }
-
-    private suspend fun recognize(timeoutMs: Long, lang: String): Heard = suspendCancellableCoroutine { cont ->
-        val r = recognizer()
-        r.cancel()
-        r.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                _state.value = VoiceState.LISTENING
-                if (beepOnReady) tones.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
-            }
-            override fun onResults(results: Bundle?) {
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                if (cont.isActive) cont.resume(if (text.isNullOrBlank()) Heard.Nothing else Heard.Text(text))
-            }
-            override fun onError(error: Int) {
-                Log.w(TAG, "recognizer error $error (onDevice=$useOnDevice, $lang)")
-                val unavailable = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
-                    error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
-                    (useOnDevice && error == SpeechRecognizer.ERROR_CLIENT)
-                val transient = error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED ||
-                    error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_SERVER
-                if (cont.isActive) cont.resume(
-                    when {
-                        unavailable -> Heard.LanguageUnavailable
-                        transient -> Heard.Transient
-                        else -> Heard.Nothing
-                    },
-                )
-            }
-            override fun onEndOfSpeech() { tones.startTone(ToneGenerator.TONE_PROP_ACK, 80) }
-            override fun onBeginningOfSpeech() = Unit
-            override fun onRmsChanged(rmsdB: Float) = Unit
-            override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onPartialResults(partialResults: Bundle?) = Unit
-            override fun onEvent(eventType: Int, params: Bundle?) = Unit
-        })
-        r.startListening(recognizerIntent(lang, timeoutMs))
-        cont.invokeOnCancellation { r.cancel() }
-    }
-
-    private fun recognizerIntent(lang: String, timeoutMs: Long) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1_200L)
-        // No EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: when the on-device service honours it, it
-        // switches to continuous mode, which never calls onResults(). listen() re-opens instead.
+    /** End of the first complete sentence after [from] ("6.30" doesn't split; long runs break at a comma). */
+    private fun sentenceEnd(text: CharSequence, from: Int): Int? {
+        for (i in from until text.length - 1) {
+            if (text[i] in ".!?" && text[i + 1].isWhitespace()) return i + 1
+            if (i - from > 160 && text[i] == ',' && text[i + 1].isWhitespace()) return i + 1
+        }
+        return null
     }
 
     // ---- yes / no, barge-in ----------------------------------------------------------------
 
     override suspend fun confirm(question: String): Boolean {
         val answer = ask(question)?.lowercase() ?: return false
-        val words = answer.split(Regex("[^a-z]+")).toSet()
+        val words = answer.split(Regex("[^a-z']+")).toSet()
         if (words.any { it in NO }) return false
         return words.any { it in YES } || answer.contains("go ahead") || answer.contains("do it")
     }
 
     override fun stop() {
-        tts?.stop()
-        recognizer?.cancel()
+        tts.stop()
+        stt.cancel()
+        _level.value = 0f
         _state.value = VoiceState.IDLE
     }
 
     private companion object {
         const val TAG = "Voice"
-        val LANGUAGES = listOf("en-IN", "en-US")
-        const val MIN_SESSION_MS = 1_500L
+        /** Quiet time after the last new word that ends a request. */
+        const val REQUEST_DONE_MS = 1_300L
+        /** Retries for transient recognizer errors (busy / disconnected), and the pause before each. */
+        const val MAX_RETRIES = 2
+        const val RETRY_DELAY_MS = 600L
         val YES = setOf("yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "haan", "ha", "correct", "please", "send")
         val NO = setOf("no", "nope", "cancel", "stop", "don't", "dont", "nahi", "wait")
     }
