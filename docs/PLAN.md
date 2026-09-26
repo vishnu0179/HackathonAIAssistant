@@ -50,7 +50,7 @@ Goal: pick the best on-device model and backend for (a) routing a request to a s
   SM8850 would be the prize. Only `gemma-4-E2B-it_qualcomm_sm8750` exists right now; check whether
   it runs on SM8850 or whether AI Hub / QNN can compile one.
 - Benchmark with our real prompts on the phone. Push a model to
-  `/sdcard/Android/data/com.hackathon.assistant/files/models/`, then run
+  `/sdcard/Download/models/`, then run
   `adb shell am broadcast -a com.hackathon.assistant.COMMAND -p com.hackathon.assistant --es bench <file>.litertlm`
   and read `adb logcat -s LlmBenchmark LiteRtLlm LlmPlanner`.
 - Deliver `docs/MODELS.md`: a table of model, backend, load time, route ms, step ms, and

@@ -2,11 +2,17 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Reads multi-GB models from /sdcard/Download/models. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
         android:name=".AssistantApp"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- Vendor libs for LiteRT-LM: OpenCL (Adreno GPU) and FastRPC (Hexagon NPU). -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
 
         <activity
             android:name=".MainActivity"

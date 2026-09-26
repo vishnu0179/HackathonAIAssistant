@@ -1,6 +1,7 @@
 package com.hackathon.assistant.llm
 
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -18,8 +19,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * On-device model via LiteRT-LM. Models live in the app's external files dir so they can be
- * pushed with adb: /sdcard/Android/data/com.hackathon.assistant/files/models/<name>.litertlm
+ * On-device model via LiteRT-LM. Models are read from /sdcard/Download/models/<name>.litertlm
+ * (needs "All files access"; tools/install.sh grants it). Files that adb writes into the app's
+ * own Android/data dir end up owned by `shell` and are unreadable by the app.
  */
 class LiteRtLlm(
     private val context: Context,
@@ -30,13 +32,16 @@ class LiteRtLlm(
 
     override val isLoaded get() = engine != null
 
-    val modelsDir: File get() = File(context.getExternalFilesDir(null), "models")
+    val modelsDir: File
+        get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "models")
 
     override suspend fun load(): Unit = lock.withLock {
         if (engine != null) return@withLock
         withContext(Dispatchers.IO) {
             val file = File(modelsDir, modelName)
-            require(file.exists()) { "Model not found: ${file.path}" }
+            require(file.canRead()) {
+                "Can't read model ${file.path}. Pushed it? Granted All files access (tools/install.sh)?"
+            }
             val start = System.currentTimeMillis()
             val config = EngineConfig(
                 modelPath = file.path,

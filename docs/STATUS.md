@@ -23,5 +23,5 @@ _Last updated: Sat 26 Sep, ~13:15 IST. Kept current with every push._
 - Is there a working NPU model for SM8850? (Teammate B, model research)
 
 ## Models on the test phone
-`/sdcard/Android/data/com.hackathon.assistant/files/models/`. Never `adb uninstall` the app:
-that deletes this folder. Use `adb install -r`.
+`/sdcard/Download/models/` (outside the app, so uninstalling does not delete them). Push with
+`adb push model.litertlm /sdcard/Download/models/`. The app needs All files access: `tools/install.sh` grants it.
