@@ -18,18 +18,50 @@ import com.hackathon.assistant.core.UiElement
  */
 internal class ScreenTranslator(private val screen: Rect) {
 
-    class Result(val elements: List<UiElement>, val nodes: Map<Int, AccessibilityNodeInfo>)
+    class Result(
+        val elements: List<UiElement>,
+        val nodes: Map<Int, AccessibilityNodeInfo>,
+        val overlay: String? = null,
+        val hidden: Int = 0,
+    )
 
-    private data class Raw(val node: AccessibilityNodeInfo, val role: Role, val label: String, val value: String?, val rect: Rect)
+    /**
+     * A subtree drawn on top of earlier content: [start, end) index range into raws.
+     * [strength]: 3 = own window, 2 = dismiss/collapse action or pane title, 1 = shape heuristic.
+     */
+    private data class Panel(val start: Int, val end: Int, val rect: Rect, val kind: String, val title: String?, val strength: Int)
+    private val panels = mutableListOf<Panel>()
+
+    private data class Raw(
+        val node: AccessibilityNodeInfo,
+        val role: Role,
+        val label: String,
+        val value: String?,
+        val rect: Rect,
+        val inOverlay: Boolean = false,
+        val closesOverlay: Boolean = false,
+    )
 
     /** Visible text anywhere on screen, for labelling buttons whose text is a sibling overlay. */
     private val overlayTexts = mutableListOf<Pair<Rect, String>>()
 
     fun translate(roots: List<AccessibilityNodeInfo>): Result {
         overlayTexts.clear()
+        panels.clear()
         roots.forEach { collectTexts(it, depth = 0) }
-        val raws = mutableListOf<Raw>()
-        roots.forEach { visit(it, raws, depth = 0) }
+        val all = mutableListOf<Raw>()
+        // Roots are top-most first. With more than one, the top one is a dialog/sheet WINDOW over
+        // the app: visit the app first (drawing order), then the dialog, so it counts as on top.
+        roots.drop(1).reversed().forEach { visit(it, all, depth = 0) }
+        if (roots.size > 1) {
+            val start = all.size
+            visit(roots.first(), all, depth = 0)
+            val r = Rect().also(roots.first()::getBoundsInScreen)
+            panels += Panel(start, all.size, r, "dialog", roots.first().paneTitle?.toString(), strength = 3)
+        } else {
+            visit(roots.first(), all, depth = 0)
+        }
+        val (raws, overlayTitle, hidden) = removeCovered(all)
         val unique = withCardContext(raws).distinctBy { Triple(it.role, it.label, it.rect) }
             .sortedWith(compareBy({ it.rect.top / ROW_BUCKET_PX }, { it.rect.left }))
             .take(MAX_ELEMENTS)
@@ -49,13 +81,66 @@ internal class ScreenTranslator(private val screen: Rect) {
                 checked = if (n.isCheckable) n.isChecked else null,
                 selected = n.isSelected,
                 focused = n.isFocused,
+                inOverlay = r.inOverlay,
+                closesOverlay = r.closesOverlay,
                 inputKind = if (n.isEditable) inputKind(n) else null,
                 bounds = Bounds(r.rect.left, r.rect.top, r.rect.right, r.rect.bottom),
             )
             nodes[id] = n
         }
-        return Result(elements, nodes)
+        return Result(elements, nodes, overlayTitle, hidden)
     }
+
+    /**
+     * The last-drawn panel is on top. Elements drawn BEFORE it and lying under it are covered,
+     * so they are left out: the model must deal with the sheet/dialog first. With a backdrop
+     * (scrim) everything drawn before the panel is covered.
+     */
+    private fun removeCovered(all: List<Raw>): Triple<List<Raw>, String?, Int> {
+        // Strongest evidence wins; among equals, the one drawn last is on top.
+        val top = panels.maxWithOrNull(compareBy<Panel>({ it.strength }, { it.start })) ?: return Triple(all, null, 0)
+        val inPanel = all.subList(top.start, top.end)
+        val backdrop = top.kind == "dialog" || inPanel.any { r -> BACKDROP_WORDS.any { r.label.contains(it, ignoreCase = true) } } ||
+            all.subList(0, top.start).any { r -> BACKDROP_WORDS.any { r.label.contains(it, ignoreCase = true) } }
+        val covered = all.withIndex().filter { (i, r) ->
+            i < top.start && (backdrop || top.rect.contains(r.rect.centerX(), r.rect.centerY()))
+        }.map { it.index }.toSet()
+        if (covered.isEmpty() && top.strength < 3) return Triple(all, null, 0)
+        val title = top.title ?: inPanel.firstOrNull { it.role == Role.TEXT }?.label ?: inPanel.firstOrNull()?.label
+        val marked = all.mapIndexedNotNull { i, r ->
+            when {
+                i in covered -> null
+                i in top.start until top.end -> r.copy(inOverlay = true, closesOverlay = isCloser(r))
+                // A backdrop drawn just before the panel dismisses it when tapped.
+                BACKDROP_WORDS.any { r.label.contains(it, ignoreCase = true) } -> r.copy(inOverlay = true, closesOverlay = true)
+                else -> r
+            }
+        }
+        val kind = if (top.kind == "dialog") "dialog" else if (top.rect.bottom >= screen.bottom - 8) "bottom sheet" else "pop-up"
+        return Triple(marked, "$kind \"${title?.take(50).orEmpty()}\"", covered.size)
+    }
+
+    private fun isCloser(r: Raw): Boolean {
+        if (r.role == Role.TEXT) return false
+        val l = r.label.lowercase()
+        val dismissible = r.node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_DISMISS }
+        return dismissible || CLOSE_WORDS.any { l == it || l.startsWith("$it ") || l.contains(it.replace(" ", "")) }
+    }
+
+    /** Material sheets/dialogs expose dismiss/collapse, or announce themselves with a pane title. */
+    private fun declaresPanel(n: AccessibilityNodeInfo): String? {
+        val actions = n.actionList.map { it.id }
+        return when {
+            n.paneTitle != null -> n.paneTitle.toString()
+            AccessibilityNodeInfo.ACTION_DISMISS in actions -> ""
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id in actions -> ""
+            else -> null
+        }
+    }
+
+    /** Sheet/dialog shape: nearly full width, a real chunk of height, but not the whole screen. */
+    private fun isPanelShape(r: Rect) =
+        r.width() >= screen.width() * 0.85 && r.height() >= screen.height() * 0.2 && r.height() <= screen.height() * 0.92
 
     private fun visit(node: AccessibilityNodeInfo, out: MutableList<Raw>, depth: Int) {
         if (depth > MAX_DEPTH) return
@@ -63,7 +148,7 @@ internal class ScreenTranslator(private val screen: Rect) {
         // Containers can report "not visible" while their children are (Play Store does), so
         // only skip emitting such nodes; always keep walking into their children.
         if (!node.isVisibleToUser || rect.isEmpty || !Rect.intersects(rect, screen)) {
-            for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, out, depth + 1) }
+            visitChildren(node, out, depth)
             return
         }
 
@@ -80,7 +165,29 @@ internal class ScreenTranslator(private val screen: Rect) {
         } else if (!hasActionableAncestor(node)) {
             ownLabel(node)?.let(::clean)?.let { out += Raw(node, textRole(node), it.take(MAX_LABEL), null, rect) }
         }
-        for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, out, depth + 1) }
+        visitChildren(node, out, depth)
+    }
+
+    /** Children in drawing order (getDrawingOrder); a later child overlapping an earlier one is on top. */
+    private fun visitChildren(node: AccessibilityNodeInfo, out: MutableList<Raw>, depth: Int) {
+        val children = (0 until node.childCount).mapNotNull { node.getChild(it) }.sortedBy { it.drawingOrder }
+        val earlier = mutableListOf<Rect>()
+        for (c in children) {
+            val r = Rect().also(c::getBoundsInScreen)
+            val start = out.size
+            visit(c, out, depth + 1)
+            val end = out.size
+            val stacked = earlier.any { Rect.intersects(it, r) }
+            val hasControls = end > start && out.subList(start, end).any { it.role != Role.TEXT }
+            val declared = declaresPanel(c)
+            when {
+                declared != null && hasControls && r.height() >= screen.height() * 0.12 ->
+                    panels += Panel(start, end, r, "sheet", declared.ifBlank { null }, strength = 2)
+                stacked && hasControls && isPanelShape(r) ->
+                    panels += Panel(start, end, r, "sheet", null, strength = 1)
+            }
+            if (!r.isEmpty) earlier += r
+        }
     }
 
     /**
@@ -228,6 +335,11 @@ internal class ScreenTranslator(private val screen: Rect) {
         const val ROW_BUCKET_PX = 24
         val WHITESPACE = Regex("\\s+")
         const val CARD_LEVELS = 3
+        val BACKDROP_WORDS = listOf("backdrop", "scrim", "touch outside")
+        val CLOSE_WORDS = listOf(
+            "close", "✕", "×", "x", "dismiss", "not now", "no thanks", "no, thanks", "skip", "later",
+            "maybe later", "cancel", "got it", "bottomsheetclose",
+        )
         val ACTION_WORDS = setOf(
             "continue", "next", "submit", "done", "ok", "okay", "proceed", "login", "log in", "sign in",
             "sign up", "get otp", "verify", "add", "add to cart", "skip", "allow", "confirm", "save", "search",

@@ -13,6 +13,10 @@ data class ScreenState(
     val appLabel: String?,
     val elements: List<UiElement>,
     val capturedAtMs: Long = System.currentTimeMillis(),
+    /** "bottom sheet \"Offers\"" / "dialog \"Allow…\"": what is drawn on top of the app, if anything. */
+    val overlay: String? = null,
+    /** How many elements the overlay hides. */
+    val hiddenBehindOverlay: Int = 0,
 )
 
 data class UiElement(
@@ -28,6 +32,10 @@ data class UiElement(
     val checked: Boolean? = null,
     val selected: Boolean = false,
     val focused: Boolean = false,
+    /** Part of the sheet/dialog drawn on top of the app. */
+    val inOverlay: Boolean = false,
+    /** Tapping this closes the overlay (close/✕/Not now/backdrop, or has a dismiss action). */
+    val closesOverlay: Boolean = false,
     /** For inputs: what the field expects, from Android's input type. */
     val inputKind: InputKind? = null,
     val bounds: Bounds,

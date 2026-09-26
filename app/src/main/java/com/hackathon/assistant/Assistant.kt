@@ -358,7 +358,13 @@ class Assistant(
         val unchanged = settle == Settle.UNCHANGED || (after != null && after.elements == state.elements)
         return if (unchanged) Outcome.Observed("${step.tool}$target had NO EFFECT, screen unchanged", ok = false)
         else {
-            val hint = if (step.tool == "type") " Now press enter or tap the matching suggestion." else ""
+            val hint = when {
+                step.tool == "type" -> " Now press enter or tap the matching suggestion."
+                state.overlay != null && after?.overlay == null -> " The overlay is closed."
+                state.overlay != null && after?.overlay != null -> " The overlay ${after.overlay} is still open."
+                state.overlay == null && after?.overlay != null -> " An overlay opened: ${after.overlay}."
+                else -> ""
+            }
             Outcome.Observed("${step.tool}$target done. ${landing(settle, after, before = state)}$hint", ok = true)
         }
     }

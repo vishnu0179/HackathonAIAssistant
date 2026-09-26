@@ -28,7 +28,7 @@ class AccessibilityScreenReader : ScreenReader {
         val label = runCatching {
             service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrNull()
-        val state = ScreenState(pkg, label, result.elements, SystemClock.uptimeMillis())
+        val state = ScreenState(pkg, label, result.elements, SystemClock.uptimeMillis(), result.overlay, result.hidden)
         Snapshots.put(state, result.nodes)
         return state
     }
@@ -102,6 +102,10 @@ class AccessibilityScreenReader : ScreenReader {
 
     override fun toPrompt(state: ScreenState): String = buildString {
         appendLine("App: ${state.appLabel ?: state.packageName} (${state.packageName})")
+        state.overlay?.let {
+            appendLine("OVERLAY ON TOP: $it (${state.hiddenBehindOverlay} elements behind it are hidden).")
+            appendLine("Unless the goal needs it, close it first: tap the element marked (closes overlay), or use back if none is marked.")
+        }
         for (e in state.elements) {
             append('[').append(e.id).append("] ").append(e.role.name.lowercase())
             if (e.label.isNotEmpty()) append(" \"").append(e.label).append('"')
@@ -110,6 +114,8 @@ class AccessibilityScreenReader : ScreenReader {
                 if (e.role == Role.LIST || (e.scrollable && e.role != Role.LIST)) add("scrollable")
                 e.checked?.let { add(if (it) "on" else "off") }
                 if (e.selected) add("selected")
+                if (e.inOverlay) add("in overlay")
+                if (e.closesOverlay) add("closes overlay")
                 e.inputKind?.let { k ->
                     add(k.name.lowercase())
                     if (e.value.isNullOrEmpty()) add("empty")

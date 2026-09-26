@@ -26,6 +26,8 @@ internal object Prompts {
             - Only fill args the user actually gave; missing ones will be asked for.
             - "final": true only if this single step completes the whole goal (e.g. Install tapped, message sent), never for just opening the app.
             - Never repeat an action that had NO EFFECT; try something else.
+            - If the screen says OVERLAY ON TOP (offer sheet, pop-up, dialog) and it is not part of the goal,
+              close it first: tap the element marked (closes overlay), or use back if none is marked.
             - Ask the user only about their intent (who, what, confirm). Never about ids or the screen.
             - When the screen needs information only the user knows (an "empty" input: name, phone, email, OTP, password),
               use fill_field on it. Never invent values and never type empty text.
