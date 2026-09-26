@@ -28,17 +28,18 @@ class AccessibilityScreenReader : ScreenReader {
         return state
     }
 
-    /**
-     * Top-most windows first: dialogs and system popups sit above the app. The keyboard and
-     * our own overlays are skipped; the model types via [com.hackathon.assistant.core.UiAction.TypeText].
-     */
+    /** Top-most first. The keyboard is skipped: the model types via UiAction.TypeText. */
     private fun contentRoots(service: AssistantAccessibilityService): List<AccessibilityNodeInfo> {
-        val windows = runCatching { service.windows }.getOrNull().orEmpty()
-            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION || it.type == AccessibilityWindowInfo.TYPE_SYSTEM }
+        val all = runCatching { service.windows }.getOrNull().orEmpty()
+        val active = all.firstOrNull { it.isActive } ?: return listOfNotNull(service.rootInActiveWindow)
+        // The active app window plus any app windows stacked above it (dialogs, sheets,
+        // permission prompts). System decor (status/nav bar, OEM bubbles) is noise.
+        return all
+            .filter { it == active || (it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.layer > active.layer) }
             .sortedByDescending { it.layer }
             .mapNotNull { it.root }
             .filter { it.packageName != service.packageName }
-        return windows.ifEmpty { listOfNotNull(service.rootInActiveWindow) }
+            .ifEmpty { listOfNotNull(service.rootInActiveWindow) }
     }
 
     override suspend fun awaitIdle(timeoutMs: Long) {
