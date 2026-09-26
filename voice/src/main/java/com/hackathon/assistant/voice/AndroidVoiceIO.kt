@@ -222,8 +222,8 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1_200L)
-        // The on-device service reads this as an Int (a Long is silently ignored).
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, timeoutMs.coerceAtMost(3_000).toInt())
+        // No EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: when the on-device service honours it, it
+        // switches to continuous mode, which never calls onResults(). listen() re-opens instead.
     }
 
     // ---- yes / no, barge-in ----------------------------------------------------------------
