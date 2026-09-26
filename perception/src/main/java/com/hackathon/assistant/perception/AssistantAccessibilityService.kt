@@ -1,5 +1,6 @@
 package com.hackathon.assistant.perception
 
+import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
@@ -14,6 +15,14 @@ class AssistantAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        // The system accessibility button (nav bar / floating) starts the assistant from any app.
+        accessibilityButtonController.registerAccessibilityButtonCallback(
+            object : AccessibilityButtonController.AccessibilityButtonCallback() {
+                override fun onClicked(controller: AccessibilityButtonController) {
+                    onTrigger?.invoke()
+                }
+            },
+        )
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -31,5 +40,9 @@ class AssistantAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: AssistantAccessibilityService? = null
             private set
+
+        /** Set by the app: what to do when the user presses the accessibility button. */
+        @Volatile
+        var onTrigger: (() -> Unit)? = null
     }
 }

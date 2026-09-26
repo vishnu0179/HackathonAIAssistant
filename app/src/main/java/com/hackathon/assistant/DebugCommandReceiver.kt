@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
  * Dev/test hook over adb:
  *   --es text "open youtube"                      run a command as if spoken
  *   --es bench gemma-4-E4B-it-gpu.litertlm        benchmark a model (logcat -s LlmBenchmark)
+ *   --ez talk true                                same as pressing the assistant button (listen)
  *   --ez dump true                                log the translated current screen (logcat -s ScreenDump)
  */
 class DebugCommandReceiver : BroadcastReceiver() {
@@ -30,7 +31,8 @@ class DebugCommandReceiver : BroadcastReceiver() {
                     val state = screen.capture()
                     Log.i("ScreenDump", state?.let(screen::toPrompt) ?: "accessibility service not connected")
                 }
-                intent.getStringExtra("text")?.let { app.assistant.handle(it) }
+                intent.getStringExtra("text")?.let { app.converse(heard = it) }
+                if (intent.getBooleanExtra("talk", false)) app.onTrigger()
             } catch (t: Throwable) {
                 Log.e("Assistant", "debug command failed", t)
             }

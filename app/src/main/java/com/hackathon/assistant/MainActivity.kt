@@ -1,5 +1,7 @@
 package com.hackathon.assistant
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,12 +15,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AssistantApp
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        }
         setContent {
             MaterialTheme {
                 val state by app.voice.state.collectAsState()
@@ -28,9 +32,7 @@ class MainActivity : ComponentActivity() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text("State: $state")
-                    Button(onClick = {
-                        app.scope.launch { app.voice.listen()?.let { app.assistant.handle(it) } }
-                    }) { Text("Talk") }
+                    Button(onClick = app::onTrigger) { Text("Talk") }
                 }
             }
         }
