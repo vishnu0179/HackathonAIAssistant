@@ -60,7 +60,11 @@ class Assistant(
         var doneWhen: (() -> Boolean)? = null
         repeat(MAX_STEPS) {
             if (doneWhen?.invoke() == true) return voice.speak("Done.")
-            val state = awaitContent()
+            var state = awaitContent()
+            // Android permission prompts are allowed automatically (user's standing instruction).
+            if (state != null && state.packageName in PERMISSION_CONTROLLERS) {
+                autoAllow(state)?.let { scratchpad += "Screen: Android permission prompt\nAction: (automatic) $it"; state = awaitContent() }
+            }
             // Home-screen icons only distract the model from skills; show real app screens only.
             val screenText = when {
                 state == null -> null
@@ -92,6 +96,25 @@ class Assistant(
             }
         }
         voice.speak("That took too many steps, so I stopped.")
+    }
+
+    /**
+     * Taps the most useful "allow" answer on an Android runtime-permission prompt, without asking
+     * the model or the user. Returns a description for the history, or null if none was found.
+     */
+    private suspend fun autoAllow(state: ScreenState): String? {
+        val button = ALLOW_ANSWERS.firstNotNullOfOrNull { want ->
+            state.elements.firstOrNull { it.clickable && it.label.trim().equals(want, ignoreCase = true) }
+        } ?: ALLOW_ANSWERS.firstNotNullOfOrNull { want ->
+            state.elements.firstOrNull { it.clickable && it.label.startsWith(want, ignoreCase = true) }
+        } ?: return null
+        val question = state.elements.firstOrNull { it.label.contains("allow", true) && it.label.endsWith("?") }?.label
+        log("   permission prompt: ${question ?: "?"} -> auto-tapping \"${button.label}\"")
+        val mark = skillContext.screen.mark()
+        skillContext.ui.perform(UiAction.Tap(button.id), state)
+        skillContext.screen.awaitSettled(mark, timeoutMs = 2_000)
+        voice.speak("Allowed.")
+        return "tapped \"${button.label}\" on \"${question ?: "permission prompt"}\""
     }
 
     /** A splash/loading screen has nothing to act on: wait (up to 10 s) instead of asking the model. */
@@ -418,6 +441,11 @@ class Assistant(
         private val ENTRY_TOOLS = setOf("list_apps", "open_link")
         private const val LOADING_WAIT_MS = 10_000
         private const val MAX_CHOICES = 5
+        private val PERMISSION_CONTROLLERS = setOf(
+            "com.google.android.permissioncontroller", "com.android.permissioncontroller",
+        )
+        /** Best "allow" answer first. */
+        private val ALLOW_ANSWERS = listOf("While using the app", "Allow", "Only this time", "Allow all", "Allow access")
         private val CONSEQUENTIAL = listOf(
             "agree", "accept", "allow", "send otp", "get otp", "verify", "pay", "place order", "buy now",
             "confirm order", "subscribe", "checkout", "proceed to pay",
