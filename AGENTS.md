@@ -9,3 +9,6 @@
   Open-source libraries are fine; add them to the Attribution section of `README.md`.
 - Small commits: `<module>: <what>`. Run `git pull --rebase` before pushing.
 - Device testing: see "Testing on device" in `docs/PLAN.md`.
+- Repos: `mainline` on https://code.amazon.com/packages/HackathonPayUIAIAssistant (internal, primary) and
+  `main` on GitHub `vishnu0179/HackathonAIAssistant` (mirror). Clone the internal one:
+  `git clone ssh://git.amazon.com/pkg/HackathonPayUIAIAssistant` (needs `mwinit -o`).
