@@ -21,6 +21,12 @@ interface Skill {
     val risk: Risk get() = Risk.SAFE
 
     suspend fun execute(ctx: SkillContext, args: Map<String, String>): ActionResult
+
+    /**
+     * Whether this skill can work on this device right now (app installed, logged in...).
+     * Unavailable skills are hidden from the model for that request.
+     */
+    fun isAvailable(context: Context): Boolean = true
 }
 
 data class SlotSpec(

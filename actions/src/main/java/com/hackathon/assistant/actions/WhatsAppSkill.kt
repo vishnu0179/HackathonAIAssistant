@@ -1,6 +1,9 @@
 package com.hackathon.assistant.actions
 
+import android.accounts.AccountManager
+import android.content.Context
 import android.content.Intent
+import android.provider.ContactsContract
 import android.net.Uri
 import com.hackathon.assistant.core.ActionResult
 import com.hackathon.assistant.core.Risk
@@ -49,6 +52,25 @@ class WhatsAppSkill : Skill {
         "text Priya on whatsapp",
         "whatsapp my boss I am working from home today",
     )
+
+    /**
+     * Only when WhatsApp is installed AND logged in. WhatsApp registers an Android account of
+     * type "com.whatsapp" after login and syncs contacts under it; either signal counts.
+     */
+    override fun isAvailable(context: Context): Boolean {
+        val installed = runCatching { context.packageManager.getPackageInfo(WHATSAPP_PACKAGE, 0) }.isSuccess
+        if (!installed) return false
+        val account = runCatching {
+            AccountManager.get(context).getAccountsByType(WHATSAPP_PACKAGE).isNotEmpty()
+        }.getOrDefault(false)
+        if (account) return true
+        return runCatching {
+            context.contentResolver.query(
+                ContactsContract.RawContacts.CONTENT_URI, arrayOf(ContactsContract.RawContacts._ID),
+                "${ContactsContract.RawContacts.ACCOUNT_TYPE} = ?", arrayOf(WHATSAPP_PACKAGE), null,
+            )?.use { it.count > 0 } ?: false
+        }.getOrDefault(false)
+    }
 
     override suspend fun execute(ctx: SkillContext, args: Map<String, String>): ActionResult {
         val contactArg = args["contact"]?.trim()

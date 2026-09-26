@@ -30,8 +30,12 @@ class Assistant(
     private val skills: SkillRegistry,
     val skillContext: SkillContext,
 ) {
-    private val tools: List<ToolSpec> by lazy {
-        skills.all().map { ToolSpec(it.id, it.description, it.slots) } + UI_TOOLS + TALK_TOOLS
+    /** Only skills usable on this device right now (e.g. WhatsApp installed and logged in). */
+    private fun availableTools(): List<ToolSpec> {
+        val usable = skills.all().filter { runCatching { it.isAvailable(skillContext.android) }.getOrDefault(false) }
+        val hidden = skills.all().map { it.id } - usable.map { it.id }.toSet()
+        if (hidden.isNotEmpty()) log("skills unavailable on this device: $hidden")
+        return usable.map { ToolSpec(it.id, it.description, it.slots) } + UI_TOOLS + TALK_TOOLS
     }
 
     private sealed interface Outcome {
@@ -50,6 +54,7 @@ class Assistant(
     suspend fun handle(utterance: String) {
         log("user: $utterance")
         lastSkill = null
+        val tools = availableTools()
         val scratchpad = mutableListOf<String>()
         var doneWhen: (() -> Boolean)? = null
         repeat(MAX_STEPS) {
