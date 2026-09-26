@@ -16,6 +16,7 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
     override suspend fun next(goal: String, tools: List<ToolSpec>, scratchpad: List<String>, screen: String?): AgentStep? {
         if (schemaFor !== tools) { schema = Prompts.reactSchema(tools); schemaFor = tools }
         val prompt = Prompts.react(goal, tools, scratchpad, screen)
+        logPrompt(prompt)
         repeat(2) { attempt ->
             val raw = llm.generate(prompt, maxTokens = 160, jsonSchema = schema)
             Log.i(TAG, "llm[$attempt]: $raw")
@@ -30,7 +31,16 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
         return null
     }
 
-    private companion object { const val TAG = "LlmPlanner" }
+    /** Full prompt to logcat (`adb logcat -s Prompt`), chunked under logcat's line limit. */
+    private fun logPrompt(prompt: String) {
+        Log.i(PROMPT_TAG, "======== prompt (${prompt.length} chars) ========")
+        prompt.lines().forEach { Log.i(PROMPT_TAG, it.ifEmpty { " " }) }
+    }
+
+    private companion object {
+        const val TAG = "LlmPlanner"
+        const val PROMPT_TAG = "Prompt"
+    }
 }
 
 /**
