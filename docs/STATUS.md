@@ -12,8 +12,13 @@ _Last updated: Sat 26 Sep, ~13:15 IST. Kept current with every push._
 - adb hooks: `--es text "<command>"` runs a command, `--es bench <model>` benchmarks a model.
 - Skill: `open_app`.
 
+## Model decision: Gemma 4 E4B (GPU)
+`gemma-4-E4B-it-gpu.litertlm`, 3 GB. Load takes 5 s; routing ~3 s and each navigation step ~3.8 s.
+**8/8 correct** on the benchmark: skill choice with slots, direct answer, clarify, and
+tapping the right chat. Gemma 4 12B (6 GB) did not finish a single benchmark in 10 minutes
+and made the phone unresponsive over adb, so it's not usable for a step loop.
+
 ## In progress (Vishnu + Claude)
-- [ ] Benchmark Gemma 4 E4B (downloaded) vs 12B (downloading) on the phone
 - [ ] `:perception`: accessibility tree → translated screen, UI controller
 - [ ] `:voice`: offline STT + TTS
 - [ ] `:actions`: call, WhatsApp, SMS, alarm, timer, maps, YouTube, flashlight, search

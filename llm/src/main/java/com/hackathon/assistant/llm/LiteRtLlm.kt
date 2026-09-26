@@ -88,7 +88,7 @@ class LiteRtLlm(
     }
 
     companion object {
-        const val DEFAULT_MODEL = "gemma-4-12B-it-gpu.litertlm"
+        const val DEFAULT_MODEL = "gemma-4-E4B-it-gpu.litertlm"
         private const val MAX_CONTEXT_TOKENS = 4096
         private const val TAG = "LiteRtLlm"
     }
