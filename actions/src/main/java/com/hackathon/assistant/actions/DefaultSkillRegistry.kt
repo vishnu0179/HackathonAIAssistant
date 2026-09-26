@@ -8,6 +8,7 @@ class DefaultSkillRegistry : SkillRegistry {
     private val skills: List<Skill> = listOf<Skill>(
         OpenAppSkill(),
         SmsReaderSkill(),
+        WhatsAppSkill(),
     ) + Skills.all
     private val byId = skills.associateBy { it.id }
 
