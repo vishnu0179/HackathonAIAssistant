@@ -30,6 +30,8 @@ internal object Prompts {
             - When the screen needs information only the user knows (an "empty" input: name, phone, email, OTP, password),
               use fill_field on it. Never invent values and never type empty text.
             - Ask before sending, paying, deleting or posting anything.
+            - If there are several options that depend on the user's preference (saved addresses, payment methods,
+              sizes, variants, accounts) and the goal doesn't name one, use ask_choice. Never pick one yourself.
             - First describe the current screen in "screen" (e.g. "Play Store sign-in page"), then decide.
             - If the screen blocks the goal (sign-in wall, missing permission, app not installed), finish and tell the user what is needed.
             - "id" is always a NUMBER from the current screen list.

@@ -128,6 +128,7 @@ class Assistant(
             else Outcome.Observed("User said: \"$answer\"", ok = true)
         }
         "fill_field" -> fillField(step, state)
+        "ask_choice" -> askChoice(step, state)
         in UI_TOOL_NAMES -> runUi(step, state)
         lastSkill -> Outcome.Observed(
             "not run: ${step.tool} was just done. Work on the CURRENT screen with screen actions.", ok = false,
@@ -189,6 +190,56 @@ class Assistant(
             append("All inputs on this screen are handled; continue with the next step of the goal.")
         }
         return Outcome.Observed(summary, ok = filled.isNotEmpty())
+    }
+
+    /**
+     * The user, not the agent, picks between preference options (addresses, payment methods,
+     * sizes, accounts). Reads out up to [MAX_CHOICES] short options, matches the spoken answer
+     * ("home", "the second one", "option 1") and taps the chosen element.
+     */
+    private suspend fun askChoice(step: AgentStep, state: ScreenState?): Outcome {
+        state ?: return Outcome.Observed("failed: screen not readable", ok = false)
+        val ids = Regex("\\d+").findAll(step.args["options"].orEmpty()).map { it.value.toInt() }.toList()
+        val options = ids.mapNotNull { id -> state.elements.firstOrNull { it.id == id } }.distinctBy { it.label }.take(MAX_CHOICES)
+        if (options.size < 2) {
+            return Outcome.Observed("failed: ask_choice needs 2+ option ids from the current screen in \"options\", e.g. \"14,16\"", ok = false)
+        }
+        val names = options.map { shortOption(it.label) }
+        val question = step.args["question"]?.takeIf { it.isNotBlank() } ?: "Which one should I choose?"
+        val prompt = question + " " + names.mapIndexed { i, n -> "Option ${i + 1}: $n." }.joinToString(" ")
+
+        var picked: Int? = null
+        for (attempt in 0..1) {
+            val answer = voice.ask(if (attempt == 0) prompt else "Sorry, which option? Say the number or the name.")
+                ?: continue
+            if (answer.lowercase().trim() in CANCEL_WORDS) { voice.speak("Okay, stopping."); return Outcome.Stop }
+            picked = matchChoice(answer, names)
+            log("   choice: heard \"$answer\" -> ${picked?.let { names[it] }}")
+            if (picked != null) break
+        }
+        val index = picked ?: run { voice.speak("Okay, I'll stop here."); return Outcome.Stop }
+        val chosen = options[index]
+        voice.speak("Okay, ${names[index]}.")
+        val tap = step.copy(tool = "tap", args = mapOf("id" to chosen.id.toString()))
+        val result = runUi(tap, state)
+        return if (result is Outcome.Observed) result.copy(text = "user chose \"${names[index]}\"; ${result.text}") else result
+    }
+
+    /** "Home, 2653 3rd floor, C2 Vasant kunj, ..." -> "Home, 2653 3rd floor". */
+    private fun shortOption(label: String) =
+        label.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(2).joinToString(", ").take(45)
+
+    /** Ordinals ("second", "option 2", "number two") first, then the best word overlap with a name. */
+    private fun matchChoice(answer: String, names: List<String>): Int? {
+        val a = answer.lowercase()
+        val ordinals = listOf("first|one|1st", "second|two|2nd", "third|three|3rd", "fourth|four|4th", "fifth|five|5th")
+        for ((i, pattern) in ordinals.withIndex()) {
+            if (i < names.size && Regex("\\b(option |number )?(${pattern}|${i + 1})\\b").containsMatchIn(a)) return i
+        }
+        val words = a.split(Regex("[^a-z0-9]+")).filter { it.length > 2 }.toSet()
+        val scores = names.map { n -> n.lowercase().split(Regex("[^a-z0-9]+")).count { it in words } }
+        val best = scores.maxOrNull() ?: 0
+        return if (best > 0 && scores.count { it == best } == 1) scores.indexOf(best) else null
     }
 
     /** true = user typed it, false = skipped, null = stop the task. Never heard or typed by us. */
@@ -342,6 +393,11 @@ class Assistant(
         )
         val TALK_TOOLS = listOf(
             ToolSpec(
+                "ask_choice",
+                "when the screen offers several options that depend on the user's preference (addresses, payment methods, sizes, variants, accounts), ask the user which one and tap it",
+                listOf(p("question", "short spoken question, e.g. Which address should I use?"), p("options", "comma-separated ids of the choices, e.g. 14,16")),
+            ),
+            ToolSpec(
                 "fill_field",
                 "ask the user by voice for ALL empty inputs on this screen (name, phone, email, OTP, address, password) and type them in",
                 listOf(p("id", "input element id"), p("question", "short spoken question, e.g. What's your phone number?")),
@@ -352,6 +408,7 @@ class Assistant(
         private val UI_TOOL_NAMES = UI_TOOLS.map { it.name }.toSet()
         private val ENTRY_TOOLS = setOf("list_apps", "open_link")
         private const val LOADING_WAIT_MS = 10_000
+        private const val MAX_CHOICES = 5
         private val CONSEQUENTIAL = listOf(
             "agree", "accept", "allow", "send otp", "get otp", "verify", "pay", "place order", "buy now",
             "confirm order", "subscribe", "checkout", "proceed to pay",
