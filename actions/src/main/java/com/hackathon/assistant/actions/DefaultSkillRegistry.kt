@@ -5,7 +5,10 @@ import com.hackathon.assistant.core.SkillRegistry
 
 /** All registered skills. Owner: actions. Add new skills to the list below. */
 class DefaultSkillRegistry : SkillRegistry {
-    private val skills: List<Skill> = listOf<Skill>(OpenAppSkill()) + Skills.all
+    private val skills: List<Skill> = listOf<Skill>(
+        OpenAppSkill(),
+        SmsReaderSkill(),
+    ) + Skills.all
     private val byId = skills.associateBy { it.id }
 
     override fun all() = skills
