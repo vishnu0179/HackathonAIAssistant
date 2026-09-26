@@ -1,8 +1,10 @@
 package com.hackathon.assistant.perception
 
 import android.graphics.Rect
+import android.text.InputType
 import android.view.accessibility.AccessibilityNodeInfo
 import com.hackathon.assistant.core.Bounds
+import com.hackathon.assistant.core.InputKind
 import com.hackathon.assistant.core.Role
 import com.hackathon.assistant.core.UiElement
 
@@ -47,6 +49,7 @@ internal class ScreenTranslator(private val screen: Rect) {
                 checked = if (n.isCheckable) n.isChecked else null,
                 selected = n.isSelected,
                 focused = n.isFocused,
+                inputKind = if (n.isEditable) inputKind(n) else null,
                 bounds = Bounds(r.rect.left, r.rect.top, r.rect.right, r.rect.bottom),
             )
             nodes[id] = n
@@ -186,6 +189,21 @@ internal class ScreenTranslator(private val screen: Rect) {
         }
     }
 
+    private fun inputKind(n: AccessibilityNodeInfo): InputKind {
+        if (n.isPassword) return InputKind.PASSWORD
+        val t = n.inputType
+        val cls = t and InputType.TYPE_MASK_CLASS
+        val variation = t and InputType.TYPE_MASK_VARIATION
+        return when {
+            cls == InputType.TYPE_CLASS_PHONE -> InputKind.PHONE
+            cls == InputType.TYPE_CLASS_NUMBER && (variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD) -> InputKind.PASSWORD
+            cls == InputType.TYPE_CLASS_NUMBER -> InputKind.NUMBER
+            cls == InputType.TYPE_CLASS_TEXT && variation in PASSWORD_VARIATIONS -> InputKind.PASSWORD
+            cls == InputType.TYPE_CLASS_TEXT && variation in EMAIL_VARIATIONS -> InputKind.EMAIL
+            else -> InputKind.TEXT
+        }
+    }
+
     private fun textRole(n: AccessibilityNodeInfo): Role =
         if (n.className?.toString()?.endsWith("ImageView") == true) Role.IMAGE else Role.TEXT
 
@@ -196,6 +214,13 @@ internal class ScreenTranslator(private val screen: Rect) {
         const val ROW_BUCKET_PX = 24
         val WHITESPACE = Regex("\\s+")
         const val CARD_LEVELS = 3
+        val PASSWORD_VARIATIONS = setOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+        )
+        val EMAIL_VARIATIONS = setOf(
+            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+        )
         val GENERIC_LABELS = setOf(
             "install", "open", "update", "uninstall", "cancel", "buy", "get", "add", "follow", "play",
             "download", "share", "like", "delete", "remove", "more options", "more", "view", "select", "join",

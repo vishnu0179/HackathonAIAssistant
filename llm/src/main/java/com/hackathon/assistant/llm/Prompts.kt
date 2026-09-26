@@ -27,6 +27,8 @@ internal object Prompts {
             - "final": true only if this single step completes the whole goal (e.g. Install tapped, message sent), never for just opening the app.
             - Never repeat an action that had NO EFFECT; try something else.
             - Ask the user only about their intent (who, what, confirm). Never about ids or the screen.
+            - When the screen needs information only the user knows (an "empty" input: name, phone, email, OTP, password),
+              use fill_field on it. Never invent values and never type empty text.
             - Ask before sending, paying, deleting or posting anything.
             - First describe the current screen in "screen" (e.g. "Play Store sign-in page"), then decide.
             - If the screen blocks the goal (sign-in wall, missing permission, app not installed), finish and tell the user what is needed.

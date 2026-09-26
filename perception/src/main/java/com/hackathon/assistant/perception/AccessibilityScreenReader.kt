@@ -110,6 +110,10 @@ class AccessibilityScreenReader : ScreenReader {
                 if (e.role == Role.LIST || (e.scrollable && e.role != Role.LIST)) add("scrollable")
                 e.checked?.let { add(if (it) "on" else "off") }
                 if (e.selected) add("selected")
+                e.inputKind?.let { k ->
+                    add(k.name.lowercase())
+                    if (e.value.isNullOrEmpty()) add("empty")
+                }
                 if (e.focused && e.editable) add("focused")
             }
             if (flags.isNotEmpty()) append(" (").append(flags.joinToString()).append(')')

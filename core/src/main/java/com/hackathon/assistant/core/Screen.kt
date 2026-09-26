@@ -28,8 +28,12 @@ data class UiElement(
     val checked: Boolean? = null,
     val selected: Boolean = false,
     val focused: Boolean = false,
+    /** For inputs: what the field expects, from Android's input type. */
+    val inputKind: InputKind? = null,
     val bounds: Bounds,
 )
+
+enum class InputKind { TEXT, PHONE, NUMBER, EMAIL, PASSWORD }
 
 enum class Role { BUTTON, TEXT, INPUT, IMAGE, CHECKBOX, SWITCH, LIST, TAB, LINK, OTHER }
 

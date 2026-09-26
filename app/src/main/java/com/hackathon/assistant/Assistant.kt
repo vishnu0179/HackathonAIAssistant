@@ -3,6 +3,7 @@ package com.hackathon.assistant
 import android.util.Log
 import com.hackathon.assistant.core.ActionResult
 import com.hackathon.assistant.core.AgentStep
+import com.hackathon.assistant.core.InputKind
 import com.hackathon.assistant.core.Planner
 import com.hackathon.assistant.core.Risk
 import com.hackathon.assistant.core.ScreenState
@@ -101,12 +102,53 @@ class Assistant(
             if (answer == null) { voice.speak("Okay, stopping."); Outcome.Stop }
             else Outcome.Observed("User said: \"$answer\"", ok = true)
         }
+        "fill_field" -> fillField(step, state)
         in UI_TOOL_NAMES -> runUi(step, state)
         lastSkill -> Outcome.Observed(
             "not run: ${step.tool} was just done. Work on the CURRENT screen with screen actions.", ok = false,
         )
         else -> skills.get(step.tool)?.let { runSkill(it, step.args) }
             ?: Outcome.Observed("Unknown tool ${step.tool}", ok = false)
+    }
+
+    /**
+     * Asks the user for a field's value by voice and types it. Spoken words are converted to the
+     * field's format (digits, email). Password/PIN fields are never heard or typed by us: the
+     * user types them and says "done".
+     */
+    private suspend fun fillField(step: AgentStep, state: ScreenState?): Outcome {
+        state ?: return Outcome.Observed("failed: screen not readable", ok = false)
+        val id = step.args["id"]?.filter { it.isDigit() }?.toIntOrNull()
+        val el = state.elements.firstOrNull { it.id == id && it.editable }
+            ?: state.elements.firstOrNull { it.editable && it.value.isNullOrEmpty() }
+            ?: return Outcome.Observed("failed: no input field on this screen. Do NOT repeat this.", ok = false)
+        val what = el.label.ifBlank { "this field" }
+
+        if (el.inputKind == InputKind.PASSWORD) {
+            voice.speak("Please type your $what yourself, then say done.")
+            repeat(3) {
+                val heard = voice.listen(timeoutMs = 20_000)?.lowercase().orEmpty()
+                if (heard.contains("done") || heard.contains("ok") || heard.contains("next")) {
+                    return Outcome.Observed("user typed \"$what\" themselves. Continue (e.g. tap Next/Sign in).", ok = true)
+                }
+                if (heard.contains("cancel") || heard.contains("stop")) { voice.speak("Okay, stopping."); return Outcome.Stop }
+            }
+            voice.speak("I'll stop here. Tell me when you're ready.")
+            return Outcome.Stop
+        }
+
+        val question = step.args["question"]?.takeIf { it.isNotBlank() } ?: "What should I enter for $what?"
+        val spoken = voice.ask(question) ?: run { voice.speak("Okay, stopping."); return Outcome.Stop }
+        val value = SpokenInput.normalize(spoken, el.inputKind)
+        log("   fill \"$what\" (${el.inputKind}): heard \"$spoken\" -> \"$value\"")
+        if (value.isBlank()) return Outcome.Observed("failed: couldn't understand the answer \"$spoken\"", ok = false)
+
+        val mark = skillContext.screen.mark()
+        val result = skillContext.ui.perform(UiAction.TypeText(el.id, value), state)
+        if (result is ActionResult.Failure) return Outcome.Observed("failed: ${result.reason}", ok = false)
+        skillContext.screen.awaitSettled(mark, timeoutMs = 2_000)
+        SpokenInput.readBack(value, el.inputKind)?.let { voice.speak("Got $it.") }
+        return Outcome.Observed("filled \"$what\" with \"$value\". Fill the next empty field or continue.", ok = true)
     }
 
     private suspend fun runSkill(skill: Skill, given: Map<String, String>): Outcome {
@@ -231,6 +273,11 @@ class Assistant(
             ToolSpec("home", "go to the home screen"),
         )
         val TALK_TOOLS = listOf(
+            ToolSpec(
+                "fill_field",
+                "ask the user by voice for a value the screen needs (name, phone, email, OTP, address, password) and type it in",
+                listOf(p("id", "input element id"), p("question", "short spoken question, e.g. What's your phone number?")),
+            ),
             ToolSpec("ask_user", "ask the user a question (missing info, or confirm before send/pay/delete)", listOf(p("question", "short spoken question"))),
             ToolSpec("finish", "end the request; also use it to answer questions yourself", listOf(p("answer", "short spoken reply"))),
         )
