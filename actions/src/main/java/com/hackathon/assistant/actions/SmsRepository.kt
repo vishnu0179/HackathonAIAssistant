@@ -28,6 +28,37 @@ internal object SmsRepository {
     }
 
     /**
+     * DEBUG/DEMO test seam. When non-null, [query] returns these messages instead of
+     * hitting the real SMS provider. Null in production, so real inboxes are unaffected.
+     *
+     * This exists because a SIM-less test device has no real SMS and Android forbids
+     * writing to the SMS provider from adb (only the default SMS app may write). Seeding
+     * here lets us test formatting/filtering and gives a repeatable demo.
+     */
+    @Volatile
+    var demoOverride: List<Sms>? = null
+
+    /**
+     * Genuine-looking Indian SMS for testing and the demo — real DLT header formats
+     * (VM-/AD-/BP- prefixes), authentic OTP and transaction phrasing, real merchants.
+     * These read exactly like a real inbox so the demo is credible to judges.
+     */
+    fun sampleMessages(): List<Sms> {
+        val now = System.currentTimeMillis()
+        val min = 60_000L
+        val hr = 3_600_000L
+        return listOf(
+            Sms("VM-HDFCBK", "482910 is the OTP for txn of Rs.2,499.00 at Amazon on your HDFC Bank Credit Card xx4021. Valid for 5 mins. Do NOT share this OTP. -HDFC Bank", now - 4 * min, isRead = false, threadId = 1),
+            Sms("AD-ICICIB", "Dear Customer, Rs.749.00 debited from A/c XX2910 on 26-Sep-25 for SWIGGY. Avl Bal: Rs.18,204.55. Not you? Call 18001234. -ICICI Bank", now - 55 * min, isRead = false, threadId = 2),
+            Sms("+919876543210", "Reached office na? Call me when you're free, need to discuss the weekend plan", now - 2 * hr, isRead = true, threadId = 3),
+            Sms("BP-AMAZON", "Your Amazon order (Sony WH-1000XM5) has been shipped and will be delivered by tomorrow 7 PM. Track: amzn.in/d/8kL2mQ", now - 5 * hr, isRead = false, threadId = 4),
+            Sms("JX-ZOMATO", "Your order from Paradise Biryani is on the way! Arjun is arriving in 12 mins. Track live: zoma.to/x92h", now - 7 * hr, isRead = true, threadId = 5),
+            Sms("VK-SBIINB", "Your A/c XX8830 credited by Rs.45,000.00 on 25-Sep-25 (Salary). Avl Bal Rs.63,204.55. -SBI", now - 27 * hr, isRead = true, threadId = 6),
+            Sms("AX-JIOTEL", "Your Jio recharge of Rs.349 is successful. Validity 28 days, 2GB/day. Enjoy unlimited calls. -Jio", now - 50 * hr, isRead = true, threadId = 7),
+        )
+    }
+
+    /**
      * Returns messages sorted newest-first.
      *
      * @param folder  which mailbox to read
@@ -43,6 +74,17 @@ internal object SmsRepository {
         onlyUnread: Boolean = false,
         senderFilter: String? = null,
     ): List<Sms> {
+        // Debug/demo seam: apply the same filters to seeded data, so the demo path
+        // exercises identical filtering/sorting logic as the real provider path.
+        demoOverride?.let { seeded ->
+            return seeded.asSequence()
+                .filter { !onlyUnread || !it.isRead }
+                .filter { senderFilter == null || it.sender.contains(senderFilter, ignoreCase = true) }
+                .sortedByDescending { it.timestampMs }
+                .take(limit)
+                .toList()
+        }
+
         val selection = buildList<String> {
             if (onlyUnread) add("${Telephony.Sms.READ} = 0")
             if (senderFilter != null) add("${Telephony.Sms.ADDRESS} LIKE ?")

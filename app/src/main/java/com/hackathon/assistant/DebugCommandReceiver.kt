@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
  *   --es bench gemma-4-E4B-it-gpu.litertlm        benchmark a model (logcat -s LlmBenchmark)
  *   --ez talk true                                same as pressing the assistant button (listen)
  *   --ez dump true                                log the translated current screen (logcat -s ScreenDump)
+ *   --es skill read_sms --es args "limit=5"       run ONE skill directly, no LLM (logcat -s Assistant)
+ *                                                 args are "k=v;k2=v2"; see the skill's slots
  */
 class DebugCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -40,6 +42,26 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 if (intent.getBooleanExtra("raw", false)) {
                     val reader = app.assistant.skillContext.screen as AccessibilityScreenReader
                     reader.rawDump().lines().forEach { Log.i("RawDump", it) }
+                }
+                // --ez seed_sms true  → load genuine-looking demo SMS (SIM-less test device).
+                // --ez seed_sms false → clear demo data, use the real SMS provider again.
+                if (intent.hasExtra("seed_sms")) {
+                    val on = intent.getBooleanExtra("seed_sms", false)
+                    com.hackathon.assistant.actions.ActionsDebug.seedSms(on)
+                    Log.i("Assistant", "seed_sms=$on (demo messages ${if (on) "loaded" else "cleared"})")
+                }
+                intent.getStringExtra("skill")?.let { skillId ->
+                    val skill = DefaultSkillRegistry().get(skillId)
+                    if (skill == null) {
+                        Log.e("Assistant", "no such skill: $skillId")
+                        return@let
+                    }
+                    val args = intent.getStringExtra("args").orEmpty()
+                        .split(";").filter { it.contains("=") }
+                        .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
+                    Log.i("Assistant", "▶ direct skill: $skillId args=$args")
+                    val result = skill.execute(app.assistant.skillContext, args)
+                    Log.i("Assistant", "◀ result: $result")
                 }
                 intent.getStringExtra("text")?.let { app.converse(heard = it) }
                 if (intent.getBooleanExtra("talk", false)) app.onTrigger()
