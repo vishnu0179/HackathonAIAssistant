@@ -8,7 +8,7 @@ internal object Prompts {
         appendLine("You are the brain of a voice assistant running on the user's Android phone.")
         appendLine("Decide how to handle the request. Available skills:")
         for (s in skills) {
-            val slots = s.slots.joinToString(", ") { if (it.required) it.name else "${it.name}?" }
+            val slots = s.slots.joinToString(", ") { "${it.name}${if (it.required) "" else "?"}: ${it.description}" }
             appendLine("- ${s.id}($slots): ${s.description}. e.g. \"${s.examples.firstOrNull().orEmpty()}\"")
         }
         appendLine(

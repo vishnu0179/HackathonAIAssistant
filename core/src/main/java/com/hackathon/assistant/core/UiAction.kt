@@ -19,6 +19,10 @@ interface UiController {
 }
 
 sealed interface ActionResult {
-    data class Success(val message: String = "") : ActionResult
+    /**
+     * [followUpGoal]: the skill got the user to the right screen (e.g. search results) and the
+     * rest ("tap the first video") is handed to UI navigation.
+     */
+    data class Success(val message: String = "", val followUpGoal: String? = null) : ActionResult
     data class Failure(val reason: String) : ActionResult
 }

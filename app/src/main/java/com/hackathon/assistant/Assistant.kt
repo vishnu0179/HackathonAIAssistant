@@ -48,7 +48,13 @@ class Assistant(
         }
         log("skill ${skill.id} $args")
         when (val result = skill.execute(skillContext, args)) {
-            is ActionResult.Success -> if (result.message.isNotBlank()) voice.speak(result.message)
+            is ActionResult.Success -> {
+                if (result.message.isNotBlank()) voice.speak(result.message)
+                result.followUpGoal?.let {
+                    skillContext.screen.awaitIdle(3_000)
+                    navigate(it)
+                }
+            }
             is ActionResult.Failure -> {
                 log("skill failed: ${result.reason}; falling back to navigation")
                 navigate(utterance)

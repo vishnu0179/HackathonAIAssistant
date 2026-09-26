@@ -20,9 +20,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AssistantApp
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-        }
+        val needed = listOf(
+            Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE,
+            Manifest.permission.SEND_SMS, Manifest.permission.READ_CONTACTS,
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (needed.isNotEmpty()) requestPermissions(needed.toTypedArray(), 1)
         setContent {
             MaterialTheme {
                 val state by app.voice.state.collectAsState()
