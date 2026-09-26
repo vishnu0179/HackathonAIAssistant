@@ -16,6 +16,7 @@ internal object AppCatalog {
     data class App(val label: String, val pkg: String, val domains: List<String>, val schemes: List<String>)
 
     @Volatile private var cached: List<App>? = null
+    @Volatile private var sequence = 0
 
     /** Common custom schemes; the resolver tells us which app (if any) owns each. */
     private val PROBE_SCHEMES = listOf(
@@ -25,7 +26,15 @@ internal object AppCatalog {
         "amazon", "flipkart", "myntra", "googlechrome", "intent",
     )
 
-    fun apps(context: Context): List<App> = cached ?: build(context).also { cached = it }
+    /** Rebuilt whenever an app was installed, updated or removed since the last build. */
+    fun apps(context: Context): List<App> {
+        val changes = context.packageManager.getChangedPackages(sequence)
+        if (changes != null) {
+            sequence = changes.sequenceNumber
+            cached = null
+        }
+        return cached ?: build(context).also { cached = it }
+    }
 
     private fun build(context: Context): List<App> {
         val pm = context.packageManager

@@ -60,7 +60,7 @@ class Assistant(
         var doneWhen: (() -> Boolean)? = null
         repeat(MAX_STEPS) {
             if (doneWhen?.invoke() == true) return voice.speak("Done.")
-            val state = skillContext.screen.capture()
+            val state = awaitContent()
             // Home-screen icons only distract the model from skills; show real app screens only.
             val screenText = when {
                 state == null -> null
@@ -92,6 +92,31 @@ class Assistant(
             }
         }
         voice.speak("That took too many steps, so I stopped.")
+    }
+
+    /** A splash/loading screen has nothing to act on: wait (up to 10 s) instead of asking the model. */
+    private suspend fun awaitContent(): ScreenState? {
+        var state = skillContext.screen.capture()
+        var waited = 0
+        while (state != null && state.elements.isEmpty() && !isLauncher(state.packageName) && waited < LOADING_WAIT_MS) {
+            kotlinx.coroutines.delay(500)
+            waited += 500
+            state = skillContext.screen.capture()
+        }
+        if (waited > 0) log("   waited ${waited} ms for ${state?.appLabel} to load")
+        return state
+    }
+
+    /**
+     * Taps with real-world consequences go back to the user first: accepting terms, sending an
+     * OTP, granting a permission, paying, ordering. "Continue" counts when the screen mentions
+     * terms/OTP (e.g. Zepto's login: "By continuing, you agree to our Terms").
+     */
+    private fun consentNeeded(label: String, state: ScreenState): Boolean {
+        val l = label.lowercase()
+        if (CONSEQUENTIAL.any { l.contains(it) }) return true
+        val screenText = state.elements.joinToString(" ") { it.label.lowercase() }
+        return PROCEED.any { l.startsWith(it) } && CONSENT_CONTEXT.any { screenText.contains(it) }
     }
 
     private suspend fun run(step: AgentStep, state: ScreenState?): Outcome = when (step.tool) {
@@ -228,6 +253,17 @@ class Assistant(
             else -> null
         } ?: return Outcome.Observed("failed: ${step.tool} needs \"id\" = a NUMBER from the current screen list", ok = false)
 
+        if (action is UiAction.Tap) {
+            val label = state.elements.firstOrNull { it.id == action.elementId }?.label.orEmpty()
+            if (consentNeeded(label, state)) {
+                val context = state.elements.firstOrNull { e -> CONSENT_CONTEXT.any { e.label.lowercase().contains(it) } }?.label
+                val why = context?.let { " The screen says: $it." }.orEmpty()
+                if (!voice.confirm("Should I tap ${fieldName(label)}?$why")) {
+                    voice.speak("Okay, I won't.")
+                    return Outcome.Stop
+                }
+            }
+        }
         val mark = skillContext.screen.mark()
         val result = skillContext.ui.perform(action, state)   // returns once the action/gesture callback fired
         if (result is ActionResult.Failure) {
@@ -315,6 +351,13 @@ class Assistant(
         )
         private val UI_TOOL_NAMES = UI_TOOLS.map { it.name }.toSet()
         private val ENTRY_TOOLS = setOf("list_apps", "open_link")
+        private const val LOADING_WAIT_MS = 10_000
+        private val CONSEQUENTIAL = listOf(
+            "agree", "accept", "allow", "send otp", "get otp", "verify", "pay", "place order", "buy now",
+            "confirm order", "subscribe", "checkout", "proceed to pay",
+        )
+        private val PROCEED = listOf("continue", "next", "proceed", "submit", "login", "log in", "sign in", "sign up")
+        private val CONSENT_CONTEXT = listOf("terms", "privacy policy", "otp", "you agree")
         private val SKIP_WORDS = setOf("skip", "skip it", "leave it", "no", "none", "not needed", "next one")
         private val CANCEL_WORDS = setOf("cancel", "stop", "stop it")
     }

@@ -210,8 +210,16 @@ internal class ScreenTranslator(private val screen: Rect) {
         }
     }
 
-    private fun textRole(n: AccessibilityNodeInfo): Role =
-        if (n.className?.toString()?.endsWith("ImageView") == true) Role.IMAGE else Role.TEXT
+    /**
+     * React Native / Compose apps often draw buttons as plain text with the click handler on a
+     * node that isn't flagged clickable (Zepto's "Continue"). Short action words become buttons;
+     * a tap on them falls back to a real touch at their bounds.
+     */
+    private fun textRole(n: AccessibilityNodeInfo): Role = when {
+        n.className?.toString()?.endsWith("ImageView") == true -> Role.IMAGE
+        ownLabel(n)?.lowercase()?.trim() in ACTION_WORDS -> Role.BUTTON
+        else -> Role.TEXT
+    }
 
     private companion object {
         const val MAX_DEPTH = 40
@@ -220,6 +228,10 @@ internal class ScreenTranslator(private val screen: Rect) {
         const val ROW_BUCKET_PX = 24
         val WHITESPACE = Regex("\\s+")
         const val CARD_LEVELS = 3
+        val ACTION_WORDS = setOf(
+            "continue", "next", "submit", "done", "ok", "okay", "proceed", "login", "log in", "sign in",
+            "sign up", "get otp", "verify", "add", "add to cart", "skip", "allow", "confirm", "save", "search",
+        )
         val PASSWORD_VARIATIONS = setOf(
             InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
