@@ -4,6 +4,10 @@
 # Output: stdout and traces/<timestamp>.log
 mkdir -p traces
 OUT="traces/$(date +%H%M%S).log"
+# Some OEM builds set log.tag to a non-standard level and use a tiny log buffer, which
+# silently drops our logs; make sure both are sane.
+adb shell setprop log.tag V >/dev/null 2>&1
+adb logcat -G 16M >/dev/null 2>&1
 adb logcat -c
 sh "$(dirname "$0")/say.sh" "$*"
 ( adb logcat -v time -s Assistant LlmPlanner Prompt LiteRtLlm Voice AppCatalog AndroidRuntime > "$OUT" ) &

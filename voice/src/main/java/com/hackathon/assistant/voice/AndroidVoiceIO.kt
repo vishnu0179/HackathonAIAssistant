@@ -105,7 +105,23 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
      * accents best, but its pack may not be installed yet, in which case we request it and fall
      * back to en-US. The working language is remembered.
      */
-    private suspend fun recognizeOnce(timeoutMs: Long): String? = withContext(Dispatchers.Main) {
+    /**
+     * The on-device recognizer closes a session after ~3 s without speech. Re-open the mic until
+     * the caller's full [timeoutMs] has passed, so people who answer a beat late are still heard.
+     */
+    private suspend fun recognizeOnce(timeoutMs: Long): String? {
+        val deadline = android.os.SystemClock.uptimeMillis() + timeoutMs
+        var first = true
+        while (true) {
+            val left = deadline - android.os.SystemClock.uptimeMillis()
+            if (!first && left < MIN_SESSION_MS) return null
+            recognizeSession(if (first) timeoutMs else left, beep = first)?.let { return it }
+            first = false
+        }
+    }
+
+    private suspend fun recognizeSession(timeoutMs: Long, beep: Boolean): String? = withContext(Dispatchers.Main) {
+        beepOnReady = beep
         var transientRetries = 0
         var i = languageIndex
         while (i < LANGUAGES.size) {
@@ -116,7 +132,7 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
                 // Recognizer still busy/closing right after TTS or a previous session: retry.
                 Heard.Transient -> {
                     if (transientRetries++ >= 2) return@withContext null
-                    kotlinx.coroutines.delay(350)
+                    kotlinx.coroutines.delay(600)
                 }
                 Heard.LanguageUnavailable -> {
                     requestDownload(lang)
@@ -130,6 +146,9 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
     }
 
     private var languageIndex = 0
+
+    /** Only the first session of a listen() beeps; silent re-opens don't. */
+    private var beepOnReady = true
 
     private fun requestDownload(lang: String) {
         if (Build.VERSION.SDK_INT < 33 || !SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) return
@@ -146,16 +165,27 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
         data object Transient : Heard
     }
 
-    private suspend fun recognize(timeoutMs: Long, lang: String): Heard = suspendCancellableCoroutine { cont ->
-        recognizer?.destroy()
-        val useOnDevice = Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-        val r = if (useOnDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+    private val useOnDevice by lazy {
+        Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+    }
+
+    /**
+     * ONE recognizer for the app's lifetime. Destroying and recreating it per utterance
+     * disconnects the shared on-device service, so the next session fails with
+     * ERROR_SERVER_DISCONNECTED (11) and then ERROR_RECOGNIZER_BUSY (8).
+     */
+    private fun recognizer(): SpeechRecognizer = recognizer ?: (
+        if (useOnDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         else SpeechRecognizer.createSpeechRecognizer(context)
-        recognizer = r
+        ).also { recognizer = it }
+
+    private suspend fun recognize(timeoutMs: Long, lang: String): Heard = suspendCancellableCoroutine { cont ->
+        val r = recognizer()
+        r.cancel()
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 _state.value = VoiceState.LISTENING
-                tones.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
+                if (beepOnReady) tones.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
             }
             override fun onResults(results: Bundle?) {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
@@ -192,7 +222,8 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1_200L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, timeoutMs.coerceAtMost(3_000))
+        // The on-device service reads this as an Int (a Long is silently ignored).
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, timeoutMs.coerceAtMost(3_000).toInt())
     }
 
     // ---- yes / no, barge-in ----------------------------------------------------------------
@@ -213,6 +244,7 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
     private companion object {
         const val TAG = "Voice"
         val LANGUAGES = listOf("en-IN", "en-US")
+        const val MIN_SESSION_MS = 1_500L
         val YES = setOf("yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "haan", "ha", "correct", "please", "send")
         val NO = setOf("no", "nope", "cancel", "stop", "don't", "dont", "nahi", "wait")
     }
