@@ -4,7 +4,8 @@ package com.hackathon.assistant.core
 interface LocalLlm {
     val isLoaded: Boolean
     suspend fun load()
-    suspend fun generate(prompt: String, maxTokens: Int = 256): String
+    /** If [jsonSchema] is set, decoding is constrained so the output always matches it. */
+    suspend fun generate(prompt: String, maxTokens: Int = 256, jsonSchema: String? = null): String
     fun close()
 }
 
