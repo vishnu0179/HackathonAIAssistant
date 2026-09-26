@@ -11,7 +11,7 @@ PID=$!
 # Stop when the agent has spoken its last line (or after 4 minutes).
 for i in $(seq 1 120); do
   sleep 2
-  grep -qE "speak: (Done|Sorry|That took|I'm stuck|Okay|Please turn)|finish\{" "$OUT" && sleep 3 && break
+  grep -qE "speak: (Done\.|Sorry, I got confused|Sorry, something went wrong|That took|I.m stuck|Okay, stopping|Okay, cancelled|Okay, I won.t|Please turn)|-> finish\{" "$OUT" && sleep 3 && break
   grep -q "(final)" "$OUT" && grep -q "speak:" "$OUT" && sleep 2 && break
 done
 kill $PID
