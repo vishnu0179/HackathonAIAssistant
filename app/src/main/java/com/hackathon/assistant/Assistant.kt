@@ -320,8 +320,17 @@ class Assistant(
         if (result is ActionResult.Failure) {
             return Outcome.Observed("failed: ${result.reason}. Do NOT repeat this; pick a different element or action.", ok = false)
         }
-        val settle = skillContext.screen.awaitSettled(mark)   // UI reacted, then went quiet
-        val after = skillContext.screen.capture()
+        var settle = skillContext.screen.awaitSettled(mark)   // UI reacted, then went quiet
+        var after = skillContext.screen.capture()
+        // Some apps accept the accessibility click but ignore it, and a spinner makes the UI
+        // look like it reacted. Judge by the element list: if nothing changed, touch for real.
+        if (action is UiAction.Tap && after != null && after.elements == state.elements) {
+            log("   tap had no visible effect; retrying as a real touch")
+            val retryMark = skillContext.screen.mark()
+            skillContext.ui.perform(action.copy(touch = true), state)
+            settle = skillContext.screen.awaitSettled(retryMark)
+            after = skillContext.screen.capture()
+        }
         val target = id?.let { i -> state.elements.firstOrNull { it.id == i }?.label }?.let { " \"$it\"" }.orEmpty()
         val unchanged = settle == Settle.UNCHANGED || (after != null && after.elements == state.elements)
         return if (unchanged) Outcome.Observed("${step.tool}$target had NO EFFECT, screen unchanged", ok = false)

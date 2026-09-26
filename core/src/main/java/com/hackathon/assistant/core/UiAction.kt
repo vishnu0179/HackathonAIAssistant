@@ -2,7 +2,8 @@ package com.hackathon.assistant.core
 
 /** Generic, app-agnostic UI operations. Element ids come from the latest [ScreenState]. */
 sealed interface UiAction {
-    data class Tap(val elementId: Int) : UiAction
+    /** [touch]: skip the accessibility click and send a real touch at the element's center. */
+    data class Tap(val elementId: Int, val touch: Boolean = false) : UiAction
     data class LongPress(val elementId: Int) : UiAction
     data class TypeText(val elementId: Int, val text: String) : UiAction
     data class Scroll(val elementId: Int?, val direction: Direction) : UiAction

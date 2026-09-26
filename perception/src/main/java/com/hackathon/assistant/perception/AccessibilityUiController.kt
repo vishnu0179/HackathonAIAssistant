@@ -26,6 +26,7 @@ class AccessibilityUiController : UiController {
             is UiAction.Tap -> withElement(on, action.elementId) { el, node ->
                 // Some apps (YouTube suggestions) accept ACTION_CLICK but ignore it. If the UI
                 // doesn't react, fall back to a real touch at the element's center.
+                if (action.touch) return@withElement gesture(service, tapPath(el), 60).result("Touched ${el.label}")
                 val before = service.lastChangeAt
                 val clicked = node?.clickableSelfOrAncestor()?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
                 if (clicked) delay(CLICK_REACTION_MS)
