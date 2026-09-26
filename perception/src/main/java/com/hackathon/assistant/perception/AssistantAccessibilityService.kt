@@ -8,9 +8,14 @@ import android.view.accessibility.AccessibilityEvent
 /** Entry point for screen reading and control. */
 class AssistantAccessibilityService : AccessibilityService() {
 
-    /** Uptime of the last event that changed the UI; drives [ScreenReader.awaitIdle]. */
+    /** Uptime of the last event that changed the UI. */
     @Volatile
     var lastChangeAt = 0L
+        private set
+
+    /** Monotonic count of UI events; a marker taken before an action tells if the UI reacted. */
+    @Volatile
+    var eventCount = 0L
         private set
 
     override fun onServiceConnected() {
@@ -26,7 +31,10 @@ class AssistantAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Our own overlay/app changing is not a reaction to the agent's action.
+        if (event?.packageName == packageName) return
         lastChangeAt = SystemClock.uptimeMillis()
+        eventCount++
     }
 
     override fun onInterrupt() = Unit

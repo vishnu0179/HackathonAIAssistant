@@ -30,6 +30,8 @@ sealed interface ActionResult {
         val message: String = "",
         val followUpGoal: String? = null,
         val doneWhen: (() -> Boolean)? = null,
+        /** Package the skill brought to the front, so the agent can wait for it to appear. */
+        val openedPackage: String? = null,
     ) : ActionResult
     data class Failure(val reason: String) : ActionResult
 }

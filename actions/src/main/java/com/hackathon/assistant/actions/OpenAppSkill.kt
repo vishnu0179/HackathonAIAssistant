@@ -29,7 +29,7 @@ class OpenAppSkill : Skill {
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ?: return ActionResult.Failure("${match.second} can't be opened")
         ctx.android.startActivity(intent)
-        return ActionResult.Success("Opening ${match.second}")
+        return ActionResult.Success("Opening ${match.second}", openedPackage = match.first)
     }
 
     /** Lower is better: exact, then prefix, then substring. */

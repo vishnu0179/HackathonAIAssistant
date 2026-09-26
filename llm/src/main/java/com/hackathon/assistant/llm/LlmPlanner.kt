@@ -18,7 +18,7 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
         val prompt = Prompts.react(goal, tools, scratchpad, screen)
         logPrompt(prompt)
         repeat(2) { attempt ->
-            val raw = llm.generate(prompt, maxTokens = 160, jsonSchema = schema)
+            val raw = llm.generate(prompt, maxTokens = 192, jsonSchema = schema)
             Log.i(TAG, "llm[$attempt]: $raw")
             val json = extractJson(raw) ?: return@repeat
             val tool = json.optString("tool")
@@ -26,7 +26,7 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
             val args = json.optJSONObject("args")
                 ?.let { a -> a.keys().asSequence().associateWith { k -> a.opt(k)?.takeUnless { it == JSONObject.NULL }?.toString().orEmpty() } }
                 .orEmpty()
-            return AgentStep(json.optString("thought"), tool, args, json.optBoolean("final", false))
+            return AgentStep(json.optString("screen"), json.optString("thought"), tool, args, json.optBoolean("final", false))
         }
         return null
     }

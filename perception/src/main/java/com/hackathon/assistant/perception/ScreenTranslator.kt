@@ -20,7 +20,12 @@ internal class ScreenTranslator(private val screen: Rect) {
 
     private data class Raw(val node: AccessibilityNodeInfo, val role: Role, val label: String, val value: String?, val rect: Rect)
 
+    /** Visible text anywhere on screen, for labelling buttons whose text is a sibling overlay. */
+    private val overlayTexts = mutableListOf<Pair<Rect, String>>()
+
     fun translate(roots: List<AccessibilityNodeInfo>): Result {
+        overlayTexts.clear()
+        roots.forEach { collectTexts(it, depth = 0) }
         val raws = mutableListOf<Raw>()
         roots.forEach { visit(it, raws, depth = 0) }
         val unique = raws.distinctBy { Triple(it.role, it.label, it.rect) }
@@ -50,13 +55,20 @@ internal class ScreenTranslator(private val screen: Rect) {
     }
 
     private fun visit(node: AccessibilityNodeInfo, out: MutableList<Raw>, depth: Int) {
-        if (depth > MAX_DEPTH || !node.isVisibleToUser) return
+        if (depth > MAX_DEPTH) return
         val rect = Rect().also(node::getBoundsInScreen)
-        if (rect.isEmpty || !Rect.intersects(rect, screen)) return
+        // Containers can report "not visible" while their children are (Play Store does), so
+        // only skip emitting such nodes; always keep walking into their children.
+        if (!node.isVisibleToUser || rect.isEmpty || !Rect.intersects(rect, screen)) {
+            for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, out, depth + 1) }
+            return
+        }
 
         if (node.isActionable()) {
             val own = ownLabel(node)
-            val label = (own ?: descendantText(node).takeIf { it.isNotBlank() } ?: resourceName(node))?.let(::clean)
+            val label = (
+                own ?: descendantText(node).takeIf { it.isNotBlank() } ?: overlayText(rect) ?: resourceName(node)
+                )?.let(::clean)
             val value = node.text?.toString()?.takeIf { node.isEditable && it.isNotBlank() && it != label }
             if (label != null || node.isEditable || node.isScrollable) {
                 out += Raw(node, roleOf(node), (label ?: "").take(MAX_LABEL), value?.take(MAX_LABEL), rect)
@@ -66,6 +78,21 @@ internal class ScreenTranslator(private val screen: Rect) {
         }
         for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, out, depth + 1) }
     }
+
+    private fun collectTexts(node: AccessibilityNodeInfo, depth: Int) {
+        if (depth > MAX_DEPTH) return
+        val rect = Rect().also(node::getBoundsInScreen)
+        if (node.isVisibleToUser && !node.isClickable) ownLabel(node)?.let { overlayTexts += rect to it }
+        for (i in 0 until node.childCount) node.getChild(i)?.let { collectTexts(it, depth + 1) }
+    }
+
+    /**
+     * Play Store style: an empty clickable Button with a separate TextView drawn on top of it
+     * ("Sign in"). Borrow text whose center lies inside the button and that fits within it.
+     */
+    private fun overlayText(button: Rect): String? =
+        overlayTexts.filter { (r, _) -> button.contains(r.centerX(), r.centerY()) && r.width() <= button.width() * 1.1 }
+            .take(2).joinToString(", ") { it.second }.takeIf { it.isNotBlank() }
 
     private fun AccessibilityNodeInfo.isActionable() =
         isClickable || isLongClickable || isEditable || isCheckable || isScrollable
@@ -82,7 +109,7 @@ internal class ScreenTranslator(private val screen: Rect) {
 
     private fun ownLabel(n: AccessibilityNodeInfo): String? =
         listOf(n.text, n.contentDescription, n.hintText)
-            .firstOrNull { !it.isNullOrBlank() }?.toString()?.trim()?.replace(WHITESPACE, " ")
+            .firstOrNull { !it.isNullOrBlank() && it.toString() != "null" }?.toString()?.trim()?.replace(WHITESPACE, " ")
 
     /** Joins text of non-actionable descendants: a list row's title, subtitle and time. */
     private fun descendantText(n: AccessibilityNodeInfo, depth: Int = 0, acc: MutableList<String> = mutableListOf()): String {

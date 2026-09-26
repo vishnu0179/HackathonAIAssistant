@@ -6,6 +6,7 @@ import com.hackathon.assistant.core.AgentStep
 import com.hackathon.assistant.core.Planner
 import com.hackathon.assistant.core.Risk
 import com.hackathon.assistant.core.ScreenState
+import com.hackathon.assistant.core.Settle
 import com.hackathon.assistant.core.Skill
 import com.hackathon.assistant.core.SkillContext
 import com.hackathon.assistant.core.SkillRegistry
@@ -56,13 +57,14 @@ class Assistant(
                 ?.let(skillContext.screen::toPrompt)
             val step = planner.next(utterance, tools, scratchpad, screenText)
                 ?: return voice.speak("Sorry, I got confused.")
-            log("step ${scratchpad.size + 1}: ${step.thought} -> ${step.tool}${step.args}${if (step.final) " (final)" else ""}")
+            log("step ${scratchpad.size + 1} | screen: ${step.screen} | thought: ${step.thought} | -> ${step.tool}${step.args}${if (step.final) " (final)" else ""}")
 
             val outcome = run(step, state)
             if (outcome is Outcome.Stop) return
             outcome as Outcome.Observed
             outcome.doneWhen?.let { doneWhen = it }
-            scratchpad += "Thought: ${step.thought}\nAction: ${step.tool}${formatArgs(step.args)}\nObservation: ${outcome.text}"
+            log("   observation: ${outcome.text}")
+            scratchpad += "Screen: ${step.screen}\nThought: ${step.thought}\nAction: ${step.tool}${formatArgs(step.args)}\nObservation: ${outcome.text}"
             if (step.final && outcome.ok) {
                 return voice.speak(outcome.spoken.ifBlank { "Done." })
             }
@@ -96,11 +98,18 @@ class Assistant(
             val summary = "${skill.description}: ${args.values.joinToString()}. Should I go ahead?"
             if (!voice.confirm(summary)) { voice.speak("Okay, I won't."); return Outcome.Stop }
         }
+        val mark = skillContext.screen.mark()
         return when (val r = skill.execute(skillContext, args)) {
             is ActionResult.Success -> {
-                if (r.followUpGoal != null) skillContext.screen.awaitIdle(3_000)
+                // An app launch: wait until that app is actually in front and drawn, so the
+                // next step sees ITS screen, not the launcher it came from.
+                val landed = r.openedPackage?.let { pkg ->
+                    val settle = skillContext.screen.awaitSettled(mark, expectPackage = pkg, timeoutMs = 6_000)
+                    val now = skillContext.screen.capture()
+                    " " + landing(settle, now)
+                }.orEmpty()
                 val next = r.followUpGoal?.let { " Next: $it" }.orEmpty()
-                Outcome.Observed("ok. ${r.message}$next".trim(), ok = true, spoken = r.message, doneWhen = r.doneWhen)
+                Outcome.Observed("ok. ${r.message}.$landed$next".trim(), ok = true, spoken = r.message, doneWhen = r.doneWhen)
             }
             is ActionResult.Failure -> Outcome.Observed("failed: ${r.reason}", ok = false)
         }
@@ -121,17 +130,31 @@ class Assistant(
             "back" -> UiAction.Back
             "home" -> UiAction.Home
             else -> null
-        } ?: return Outcome.Observed("failed: ${step.tool} needs an element id", ok = false)
+        } ?: return Outcome.Observed("failed: ${step.tool} needs \"id\" = a NUMBER from the current screen list", ok = false)
 
-        val result = skillContext.ui.perform(action, state)
-        skillContext.screen.awaitIdle()
+        val mark = skillContext.screen.mark()
+        val result = skillContext.ui.perform(action, state)   // returns once the action/gesture callback fired
+        if (result is ActionResult.Failure) return Outcome.Observed("failed: ${result.reason}", ok = false)
+        val settle = skillContext.screen.awaitSettled(mark)   // UI reacted, then went quiet
         val after = skillContext.screen.capture()
         val target = id?.let { i -> state.elements.firstOrNull { it.id == i }?.label }?.let { " \"$it\"" }.orEmpty()
-        return when {
-            result is ActionResult.Failure -> Outcome.Observed("failed: ${result.reason}", ok = false)
-            after != null && after.elements == state.elements ->
-                Outcome.Observed("${step.tool}$target had NO EFFECT, screen unchanged", ok = false)
-            else -> Outcome.Observed("ok, ${step.tool}$target done; screen changed", ok = true)
+        val unchanged = settle == Settle.UNCHANGED || (after != null && after.elements == state.elements)
+        return if (unchanged) Outcome.Observed("${step.tool}$target had NO EFFECT, screen unchanged", ok = false)
+        else Outcome.Observed("${step.tool}$target done. ${landing(settle, after, before = state)}", ok = true)
+    }
+
+    /** Where we ended up, in words the model can use: "Now in Google Play Store (new screen)." */
+    private fun landing(settle: Settle, now: ScreenState?, before: ScreenState? = null): String {
+        val app = now?.appLabel ?: now?.packageName ?: "unknown app"
+        val where = when {
+            before != null && now != null && now.packageName != before.packageName -> "Switched to $app"
+            else -> "Now in $app"
+        }
+        return when (settle) {
+            Settle.OPENED -> "$app is open."
+            Settle.CHANGED -> "$where (screen changed)."
+            Settle.TIMEOUT -> "$where (still loading or animating)."
+            Settle.UNCHANGED -> "$where (nothing changed)."
         }
     }
 

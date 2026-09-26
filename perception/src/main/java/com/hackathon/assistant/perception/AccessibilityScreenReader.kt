@@ -7,6 +7,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.hackathon.assistant.core.Role
 import com.hackathon.assistant.core.ScreenReader
 import com.hackathon.assistant.core.ScreenState
+import com.hackathon.assistant.core.Settle
 import kotlinx.coroutines.delay
 
 /** Accessibility tree -> [ScreenState] translation layer. */
@@ -16,16 +17,14 @@ class AccessibilityScreenReader : ScreenReader {
         val service = AssistantAccessibilityService.instance ?: return null
         val metrics = service.resources.displayMetrics
         // Right after an app launch the window can briefly have no content; give it a moment.
-        var roots = contentRoots(service)
+        var frame = foreground(service)
         repeat(EMPTY_RETRIES) {
-            if (roots.isNotEmpty()) return@repeat
+            if (frame != null) return@repeat
             delay(300)
-            roots = contentRoots(service)
+            frame = foreground(service)
         }
-        if (roots.isEmpty()) return ScreenState(service.packageName, null, emptyList(), SystemClock.uptimeMillis())
+        val (pkg, roots) = frame ?: return ScreenState(service.packageName, null, emptyList(), SystemClock.uptimeMillis())
         val result = ScreenTranslator(Rect(0, 0, metrics.widthPixels, metrics.heightPixels)).translate(roots)
-        // The active window is the app the user is in; system overlays (nav bar, status bar) are not.
-        val pkg = (service.rootInActiveWindow ?: roots.first()).packageName?.toString().orEmpty()
         val label = runCatching {
             service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrNull()
@@ -34,27 +33,70 @@ class AccessibilityScreenReader : ScreenReader {
         return state
     }
 
-    /** Top-most first. The keyboard is skipped: the model types via UiAction.TypeText. */
-    private fun contentRoots(service: AssistantAccessibilityService): List<AccessibilityNodeInfo> {
+    /**
+     * The active app window plus app windows stacked above it (dialogs, sheets, permission
+     * prompts), top-most first, and the active window's package. Header and elements come
+     * from the SAME window list, so the model never sees one app's elements under another's
+     * name. System decor (status/nav bar, OEM bubbles) and the keyboard are skipped.
+     */
+    private fun foreground(service: AssistantAccessibilityService): Pair<String, List<AccessibilityNodeInfo>>? {
         val all = runCatching { service.windows }.getOrNull().orEmpty()
-        val active = all.firstOrNull { it.isActive } ?: return listOfNotNull(service.rootInActiveWindow)
-        // The active app window plus any app windows stacked above it (dialogs, sheets,
-        // permission prompts). System decor (status/nav bar, OEM bubbles) is noise.
-        return all
+        val active = all.firstOrNull { it.isActive }
+        val activeRoot = active?.root ?: service.rootInActiveWindow ?: return null
+        val pkg = activeRoot.packageName?.toString() ?: return null
+        val roots = if (active == null) listOf(activeRoot) else all
             .filter { it == active || (it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.layer > active.layer) }
             .sortedByDescending { it.layer }
             .mapNotNull { it.root }
             .filter { it.packageName != service.packageName }
-            .ifEmpty { listOfNotNull(service.rootInActiveWindow) }
+        return if (roots.isEmpty() || activeRoot.childCount == 0) null else pkg to roots
     }
 
-    override suspend fun awaitIdle(timeoutMs: Long) {
-        val service = AssistantAccessibilityService.instance ?: return
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        delay(MIN_WAIT_MS)
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (SystemClock.uptimeMillis() - service.lastChangeAt >= QUIET_MS) return
-            delay(50)
+    /** The package whose window is currently active (in front). */
+    private fun activePackage(service: AssistantAccessibilityService): String? =
+        (runCatching { service.windows }.getOrNull()?.firstOrNull { it.isActive }?.root ?: service.rootInActiveWindow)
+            ?.packageName?.toString()
+
+    /** Debug: every window and node as the service sees it (adb ... --ez raw true). */
+    fun rawDump(): String = buildString {
+        val service = AssistantAccessibilityService.instance ?: return "not connected"
+        for (w in runCatching { service.windows }.getOrNull().orEmpty()) {
+            appendLine("WINDOW type=${w.type} layer=${w.layer} active=${w.isActive} pkg=${w.root?.packageName}")
+            fun walk(n: AccessibilityNodeInfo, d: Int) {
+                val r = Rect().also(n::getBoundsInScreen)
+                appendLine("  ".repeat(d.coerceAtMost(30)) + "${n.className?.toString()?.substringAfterLast('.')} " +
+                    "t=${n.text} d=${n.contentDescription} vis=${n.isVisibleToUser} clk=${n.isClickable} $r")
+                for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it, d + 1) }
+            }
+            w.root?.let { walk(it, 1) }
+        }
+    }
+
+    override fun mark(): Long = AssistantAccessibilityService.instance?.eventCount ?: 0L
+
+    override suspend fun awaitSettled(mark: Long, expectPackage: String?, timeoutMs: Long): Settle {
+        val service = AssistantAccessibilityService.instance ?: return Settle.TIMEOUT
+        val start = SystemClock.uptimeMillis()
+        val deadline = start + timeoutMs
+        fun now() = SystemClock.uptimeMillis()
+
+        // 1. Did the UI react at all? Taps usually react within ~100 ms; app launches later.
+        val reactBy = start + if (expectPackage != null) timeoutMs else REACT_MS
+        while (service.eventCount == mark && now() < reactBy) delay(POLL_MS)
+        if (service.eventCount == mark) return Settle.UNCHANGED
+
+        // 2. If an app launch was expected, wait until it is actually in front.
+        if (expectPackage != null) {
+            while (activePackage(service) != expectPackage && now() < deadline) delay(POLL_MS)
+            if (activePackage(service) != expectPackage) return Settle.TIMEOUT
+        }
+
+        // 3. Wait for the UI to go quiet (animations, list loading).
+        while (now() - service.lastChangeAt < QUIET_MS && now() < deadline) delay(POLL_MS)
+        return when {
+            now() - service.lastChangeAt < QUIET_MS -> Settle.TIMEOUT
+            expectPackage != null -> Settle.OPENED
+            else -> Settle.CHANGED
         }
     }
 
@@ -76,9 +118,10 @@ class AccessibilityScreenReader : ScreenReader {
     }.trimEnd()
 
     private companion object {
-        const val MIN_WAIT_MS = 150L
         const val EMPTY_RETRIES = 5
-        const val QUIET_MS = 350L
+        const val REACT_MS = 1_200L
+        const val QUIET_MS = 400L
+        const val POLL_MS = 40L
     }
 }
 

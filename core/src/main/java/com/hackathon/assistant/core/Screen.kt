@@ -38,13 +38,31 @@ data class Bounds(val left: Int, val top: Int, val right: Int, val bottom: Int) 
     val centerY get() = (top + bottom) / 2
 }
 
+/** How the UI responded to an action, as observed by [ScreenReader.awaitSettled]. */
+enum class Settle {
+    /** UI changed and has stopped changing. */
+    CHANGED,
+    /** The expected app came to the front and settled. */
+    OPENED,
+    /** No UI event at all after the action. */
+    UNCHANGED,
+    /** UI kept changing (video, animation) or the expected app never appeared. */
+    TIMEOUT,
+}
+
 /** Reads the current screen. Implemented by :perception. */
 interface ScreenReader {
     /** Snapshot of the foreground window, or null if the accessibility service is not connected. */
     suspend fun capture(): ScreenState?
 
-    /** Suspends until the UI stops changing (or [timeoutMs] elapses). Call after every action. */
-    suspend fun awaitIdle(timeoutMs: Long = 2_000)
+    /** Take a marker BEFORE acting; pass it to [awaitSettled] after. */
+    fun mark(): Long
+
+    /**
+     * Suspends until the UI has reacted to the action taken after [mark] and then gone quiet.
+     * With [expectPackage], also waits until that app's window is in front.
+     */
+    suspend fun awaitSettled(mark: Long, expectPackage: String? = null, timeoutMs: Long = 5_000): Settle
 
     /** Renders a snapshot as the compact text the planner prompt consumes. */
     fun toPrompt(state: ScreenState): String

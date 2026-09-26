@@ -32,11 +32,10 @@ internal fun SkillContext.launch(
     doneWhen: (() -> Boolean)? = null,
 ): ActionResult {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    if (intent.resolveActivity(android.packageManager) == null) {
-        return ActionResult.Failure("No app can handle that")
-    }
+    val target = intent.resolveActivity(android.packageManager)
+        ?: return ActionResult.Failure("No app can handle that")
     android.startActivity(intent)
-    return ActionResult.Success(success, followUp, doneWhen)
+    return ActionResult.Success(success, followUp, doneWhen, openedPackage = target.packageName)
 }
 
 internal fun uri(s: String): Uri = Uri.parse(s)

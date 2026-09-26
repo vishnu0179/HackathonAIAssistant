@@ -16,8 +16,12 @@ data class ToolSpec(
     val params: List<SlotSpec> = emptyList(),
 )
 
-/** One ReAct step: why, which tool, with what, and whether this finishes the request. */
+/**
+ * One ReAct step: what the model understands the current screen to be, why it acts, which
+ * tool, with what, and whether this finishes the request.
+ */
 data class AgentStep(
+    val screen: String,
     val thought: String,
     val tool: String,
     val args: Map<String, String>,

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import com.hackathon.assistant.actions.DefaultSkillRegistry
 import com.hackathon.assistant.core.ToolSpec
+import com.hackathon.assistant.perception.AccessibilityScreenReader
 import com.hackathon.assistant.llm.LlmBenchmark
 import kotlinx.coroutines.launch
 
@@ -35,6 +36,10 @@ class DebugCommandReceiver : BroadcastReceiver() {
                     val screen = app.assistant.skillContext.screen
                     val state = screen.capture()
                     Log.i("ScreenDump", state?.let(screen::toPrompt) ?: "accessibility service not connected")
+                }
+                if (intent.getBooleanExtra("raw", false)) {
+                    val reader = app.assistant.skillContext.screen as AccessibilityScreenReader
+                    reader.rawDump().lines().forEach { Log.i("RawDump", it) }
                 }
                 intent.getStringExtra("text")?.let { app.converse(heard = it) }
                 if (intent.getBooleanExtra("talk", false)) app.onTrigger()
