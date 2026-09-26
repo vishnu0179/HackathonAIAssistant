@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Manual DI: the single place where modules are wired together. */
 class AssistantApp : Application() {
@@ -50,8 +52,10 @@ class AssistantApp : Application() {
         conversation = scope.launch { converse(heard = null) }
     }
 
-    /** Runs one request: [heard] if given (typed/adb), else listens first. */
-    suspend fun converse(heard: String?) {
+    private val oneAtATime = Mutex()
+
+    /** Runs one request: [heard] if given (typed/adb), else listens first. Requests never overlap. */
+    suspend fun converse(heard: String?) = oneAtATime.withLock {
         try {
             val utterance = heard ?: voice.listen() ?: return
             voice.setThinking(true)

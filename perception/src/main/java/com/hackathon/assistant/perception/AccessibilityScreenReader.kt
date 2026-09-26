@@ -15,8 +15,14 @@ class AccessibilityScreenReader : ScreenReader {
     override suspend fun capture(): ScreenState? {
         val service = AssistantAccessibilityService.instance ?: return null
         val metrics = service.resources.displayMetrics
-        val roots = contentRoots(service)
-        if (roots.isEmpty()) return null
+        // Right after an app launch the window can briefly have no content; give it a moment.
+        var roots = contentRoots(service)
+        repeat(EMPTY_RETRIES) {
+            if (roots.isNotEmpty()) return@repeat
+            delay(300)
+            roots = contentRoots(service)
+        }
+        if (roots.isEmpty()) return ScreenState(service.packageName, null, emptyList(), SystemClock.uptimeMillis())
         val result = ScreenTranslator(Rect(0, 0, metrics.widthPixels, metrics.heightPixels)).translate(roots)
         // The active window is the app the user is in; system overlays (nav bar, status bar) are not.
         val pkg = (service.rootInActiveWindow ?: roots.first()).packageName?.toString().orEmpty()
@@ -71,6 +77,7 @@ class AccessibilityScreenReader : ScreenReader {
 
     private companion object {
         const val MIN_WAIT_MS = 150L
+        const val EMPTY_RETRIES = 5
         const val QUIET_MS = 350L
     }
 }

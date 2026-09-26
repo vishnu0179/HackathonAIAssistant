@@ -1,59 +1,62 @@
 package com.hackathon.assistant.llm
 
-import com.hackathon.assistant.core.Skill
+import com.hackathon.assistant.core.ToolSpec
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal object Prompts {
 
-    fun route(utterance: String, skills: List<Skill>): String = buildString {
-        appendLine("You are the brain of a voice assistant running on the user's Android phone.")
-        appendLine("Decide how to handle the request. Available skills:")
-        for (s in skills) {
-            val slots = s.slots.joinToString(", ") { "${it.name}${if (it.required) "" else "?"}: ${it.description}" }
-            appendLine("- ${s.id}($slots): ${s.description}. e.g. \"${s.examples.firstOrNull().orEmpty()}\"")
-        }
+    fun react(goal: String, tools: List<ToolSpec>, scratchpad: List<String>, screen: String?): String = buildString {
+        appendLine("You are a voice assistant operating the user's Android phone. Reach the user's goal step by step.")
+        val (screenTools, skillTools) = tools.partition { it.name in SCREEN_TOOLS }
+        appendLine("Skills (use these first; they work from anywhere):")
+        skillTools.forEach { appendLine(line(it)) }
+        appendLine("Screen actions (only inside an open app, when no skill fits):")
+        screenTools.forEach { appendLine(line(it)) }
         appendLine(
             """
-            Reply with JSON:
-            - {"type":"skill","skill":<id>,"args":{<slot>:<value>}} if a skill fits. Only fill args the user actually said.
-            - {"type":"navigate","text":<goal>} if the task needs operating an app's screen and no skill fits. Write a concrete goal.
-            - {"type":"answer","text":<reply>} for questions you can answer yourself. One or two short spoken sentences.
-            - {"type":"clarify","text":<question>} only if the request is too vague to start. One short question.
-            Request: "$utterance"
+            Rules:
+            - If a skill can do it, call the skill directly. Do not open apps or tap around for it.
+            - Answer general-knowledge questions yourself with finish.
+            - Only fill args the user actually gave; missing ones will be asked for.
+            - "final": true if this single step completes the whole goal.
+            - Never repeat an action that had NO EFFECT; try something else.
+            - Ask the user only about their intent (who, what, confirm). Never about ids or the screen.
+            - Ask before sending, paying, deleting or posting anything.
+            - Keep "thought" under 12 words.
             """.trimIndent(),
         )
-    }
-
-    fun step(goal: String, screen: String, history: List<String>): String = buildString {
-        appendLine("You operate an Android phone for the user by choosing ONE action at a time.")
-        appendLine("Goal: $goal")
-        if (history.isNotEmpty()) {
-            appendLine("Actions so far:")
-            history.takeLast(8).forEachIndexed { i, h -> appendLine("${i + 1}. $h") }
+        appendLine("Goal: \"$goal\"")
+        if (scratchpad.isNotEmpty()) {
+            appendLine("Previous steps:")
+            scratchpad.takeLast(MAX_SCRATCHPAD).forEach { appendLine(it) }
         }
-        appendLine("Current screen (elements are [id] role \"label\"):")
-        appendLine(screen)
-        appendLine(
-            """
-            Actions: tap(id), long_press(id), type(id,text), enter (submit the focused field), scroll(id?,direction), back, home, notifications,
-            ask(text) = ask the user a question when you need information only they have,
-            done(text) = goal achieved; text is a short spoken summary, fail(text) = impossible; say why.
-            Before sending, paying, deleting or posting, use ask to confirm with the user.
-            If an action had no effect, do NOT repeat it; try a different element or approach.
-            Reply with JSON: {"action":..,"id":..,"text":..,"direction":..,"reason":<few words>}
-            """.trimIndent(),
-        )
+        if (screen != null) {
+            appendLine("Current screen (elements are [id] role \"label\"):")
+            appendLine(screen)
+        }
+        append("""Reply with JSON: {"thought": ..., "tool": ..., "args": {...}, "final": true|false}""")
     }
 
-    const val ROUTE_SCHEMA = """{"type":"object","properties":{
-"type":{"type":"string","enum":["skill","navigate","answer","clarify"]},
-"skill":{"type":"string"},
-"args":{"type":"object"},
-"text":{"type":"string"}},"required":["type"]}"""
+    /** The tool name is an enum of registered tools, so the model cannot invent one. */
+    fun reactSchema(tools: List<ToolSpec>): String = JSONObject()
+        .put("type", "object")
+        .put(
+            "properties",
+            JSONObject()
+                .put("thought", JSONObject().put("type", "string"))
+                .put("tool", JSONObject().put("type", "string").put("enum", JSONArray(tools.map { it.name })))
+                .put("args", JSONObject().put("type", "object"))
+                .put("final", JSONObject().put("type", "boolean")),
+        )
+        .put("required", JSONArray(listOf("thought", "tool", "args", "final")))
+        .toString()
 
-    const val STEP_SCHEMA = """{"type":"object","properties":{
-"action":{"type":"string","enum":["tap","long_press","type","enter","scroll","back","home","notifications","ask","done","fail"]},
-"id":{"type":"integer"},
-"text":{"type":"string"},
-"direction":{"type":"string","enum":["up","down","left","right"]},
-"reason":{"type":"string"}},"required":["action","reason"]}"""
+    private fun line(t: ToolSpec): String {
+        val params = t.params.joinToString(", ") { "${it.name}${if (it.required) "" else "?"}: ${it.description}" }
+        return "- ${t.name}($params): ${t.description}"
+    }
+
+    private val SCREEN_TOOLS = setOf("tap", "long_press", "type", "enter", "scroll", "back", "home")
+    private const val MAX_SCRATCHPAD = 6
 }

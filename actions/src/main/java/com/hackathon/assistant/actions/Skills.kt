@@ -101,6 +101,7 @@ internal object Skills {
             Intent(Intent.ACTION_VIEW, uri("https://www.youtube.com/results?search_query=${enc(q)}")).setPackage(YOUTUBE),
             "",
             followUp = "Play the first video in the YouTube search results for \"$q\" (skip ads and Shorts shelves). Then done.",
+            doneWhen = musicPlaying(),
         )
     }
 
@@ -114,6 +115,7 @@ internal object Skills {
             Intent(Intent.ACTION_VIEW, uri("spotify:search:${enc(q)}")).setPackage(SPOTIFY),
             "",
             followUp = "Start playing the top result in the Spotify search results for \"$q\". Then done.",
+            doneWhen = musicPlaying(),
         )
     }
 

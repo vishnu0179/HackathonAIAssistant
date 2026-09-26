@@ -1,6 +1,7 @@
 package com.hackathon.assistant.actions
 
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import com.hackathon.assistant.core.ActionResult
 import com.hackathon.assistant.core.Risk
@@ -24,14 +25,26 @@ internal fun slot(name: String, description: String, question: String, required:
     SlotSpec(name, description, required, question)
 
 /** Starts [intent] from a non-activity context; Failure if nothing handles it. */
-internal fun SkillContext.launch(intent: Intent, success: String, followUp: String? = null): ActionResult {
+internal fun SkillContext.launch(
+    intent: Intent,
+    success: String,
+    followUp: String? = null,
+    doneWhen: (() -> Boolean)? = null,
+): ActionResult {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     if (intent.resolveActivity(android.packageManager) == null) {
         return ActionResult.Failure("No app can handle that")
     }
     android.startActivity(intent)
-    return ActionResult.Success(success, followUp)
+    return ActionResult.Success(success, followUp, doneWhen)
 }
 
 internal fun uri(s: String): Uri = Uri.parse(s)
 internal fun enc(s: String): String = Uri.encode(s)
+
+/** True once any app is playing audio; ends "play X" navigation without asking the model. */
+internal fun SkillContext.musicPlaying(): () -> Boolean {
+    val am = android.getSystemService(AudioManager::class.java)
+    val wasPlaying = am.isMusicActive
+    return { !wasPlaying && am.isMusicActive }
+}

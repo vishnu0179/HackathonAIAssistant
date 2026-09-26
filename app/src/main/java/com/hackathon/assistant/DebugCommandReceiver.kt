@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.hackathon.assistant.actions.DefaultSkillRegistry
+import com.hackathon.assistant.core.ToolSpec
 import com.hackathon.assistant.llm.LlmBenchmark
 import kotlinx.coroutines.launch
 
@@ -24,7 +25,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 intent.getStringExtra("bench")?.let { model ->
                     app.llm.close()
                     app.llm.modelName = model
-                    LlmBenchmark.run(app.llm, DefaultSkillRegistry().all() + LlmBenchmark.plannedSkills)
+                    LlmBenchmark.run(
+                        app.llm,
+                        (DefaultSkillRegistry().all() + LlmBenchmark.plannedSkills).map { ToolSpec(it.id, it.description, it.slots) } +
+                            Assistant.UI_TOOLS + Assistant.TALK_TOOLS,
+                    )
                 }
                 if (intent.getBooleanExtra("dump", false)) {
                     val screen = app.assistant.skillContext.screen

@@ -23,8 +23,13 @@ interface UiController {
 sealed interface ActionResult {
     /**
      * [followUpGoal]: the skill got the user to the right screen (e.g. search results) and the
-     * rest ("tap the first video") is handed to UI navigation.
+     * rest ("tap the first video") is handed to UI navigation. [doneWhen] lets the skill end
+     * that navigation early from real device state (e.g. music started), which the model can't see.
      */
-    data class Success(val message: String = "", val followUpGoal: String? = null) : ActionResult
+    data class Success(
+        val message: String = "",
+        val followUpGoal: String? = null,
+        val doneWhen: (() -> Boolean)? = null,
+    ) : ActionResult
     data class Failure(val reason: String) : ActionResult
 }

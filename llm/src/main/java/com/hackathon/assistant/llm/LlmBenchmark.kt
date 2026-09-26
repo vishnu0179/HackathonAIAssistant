@@ -5,6 +5,7 @@ import com.hackathon.assistant.core.ActionResult
 import com.hackathon.assistant.core.Skill
 import com.hackathon.assistant.core.SkillContext
 import com.hackathon.assistant.core.SlotSpec
+import com.hackathon.assistant.core.ToolSpec
 
 /** Times realistic planner calls so models can be compared on-device (see DebugCommandReceiver). */
 object LlmBenchmark {
@@ -43,25 +44,25 @@ object LlmBenchmark {
         [8] list (scrollable)
     """.trimIndent()
 
-    suspend fun run(llm: LiteRtLlm, skills: List<Skill>) {
+    suspend fun run(llm: LiteRtLlm, tools: List<ToolSpec>) {
         val planner = LlmPlanner(llm)
         val t0 = System.currentTimeMillis()
         llm.load()
         Log.i(TAG, "${llm.modelName}: load ${System.currentTimeMillis() - t0} ms")
-        val routes = listOf(
+        val cases = listOf(
             "open youtube", "call mom", "set an alarm for 6 30 tomorrow",
             "send a whatsapp message to rahul saying I'm running late",
             "what's the capital of australia", "do the thing",
         )
-        for (u in routes) {
+        for (goal in cases) {
             val t = System.currentTimeMillis()
-            val d = planner.route(u, skills)
-            Log.i(TAG, "route ${System.currentTimeMillis() - t} ms | $u -> $d")
+            val step = planner.next(goal, tools, emptyList(), null)
+            Log.i(TAG, "first step ${System.currentTimeMillis() - t} ms | $goal -> $step")
         }
         repeat(2) {
             val t = System.currentTimeMillis()
-            val d = planner.nextStep("Send Rahul the message: I'm running late", SAMPLE_SCREEN, emptyList())
-            Log.i(TAG, "step ${System.currentTimeMillis() - t} ms -> $d")
+            val step = planner.next("Send Rahul the message: I'm running late", tools, emptyList(), SAMPLE_SCREEN)
+            Log.i(TAG, "screen step ${System.currentTimeMillis() - t} ms -> $step")
         }
         Log.i(TAG, "${llm.modelName}: DONE")
     }
