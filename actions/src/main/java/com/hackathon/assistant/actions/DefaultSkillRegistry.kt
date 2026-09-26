@@ -11,6 +11,15 @@ class DefaultSkillRegistry : SkillRegistry {
         AppSkills.openLink,
         SmsReaderSkill(),
         WhatsAppSkill(),
+        // Wave 1 Android-API skills
+        CalendarSkill(),
+        ContactLookupSkill(),
+        ClipboardSkill(),
+        CallLogSkill(),
+        LocationSkill(),
+        DeviceStatusSkill(),
+        MediaControlSkill(),
+        // (list_apps is provided by AppSkills.listApps above)
     ) + Skills.all
     private val byId = skills.associateBy { it.id }
 

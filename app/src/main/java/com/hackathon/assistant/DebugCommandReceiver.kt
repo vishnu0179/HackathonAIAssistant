@@ -9,6 +9,7 @@ import com.hackathon.assistant.core.ToolSpec
 import com.hackathon.assistant.perception.AccessibilityScreenReader
 import com.hackathon.assistant.llm.LlmBenchmark
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Dev/test hook over adb:
@@ -20,6 +21,17 @@ import kotlinx.coroutines.launch
  *                                                 args are "k=v;k2=v2"; see the skill's slots
  */
 class DebugCommandReceiver : BroadcastReceiver() {
+
+    /**
+     * File sink for test output. vivo/iQOO devices mute app logcat, so we mirror
+     * debug results to a file readable with:
+     *   adb shell run-as com.hackathon.assistant cat files/skilltest.log
+     */
+    private fun Context.dbg(msg: String) {
+        Log.i("Assistant", msg)
+        runCatching { File(filesDir, "skilltest.log").appendText(msg + "\n") }
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as AssistantApp
         // Not goAsync(): benchmarks run for minutes, far past the broadcast deadline.
@@ -48,20 +60,20 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 if (intent.hasExtra("seed_sms")) {
                     val on = intent.getBooleanExtra("seed_sms", false)
                     com.hackathon.assistant.actions.ActionsDebug.seedSms(on)
-                    Log.i("Assistant", "seed_sms=$on (demo messages ${if (on) "loaded" else "cleared"})")
+                    app.dbg("seed_sms=$on (demo messages ${if (on) "loaded" else "cleared"})")
                 }
                 intent.getStringExtra("skill")?.let { skillId ->
                     val skill = DefaultSkillRegistry().get(skillId)
                     if (skill == null) {
-                        Log.e("Assistant", "no such skill: $skillId")
+                        app.dbg("no such skill: $skillId")
                         return@let
                     }
                     val args = intent.getStringExtra("args").orEmpty()
                         .split(";").filter { it.contains("=") }
                         .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
-                    Log.i("Assistant", "▶ direct skill: $skillId args=$args")
+                    app.dbg("▶ direct skill: $skillId args=$args")
                     val result = skill.execute(app.assistant.skillContext, args)
-                    Log.i("Assistant", "◀ result: $result")
+                    app.dbg("◀ result: $result")
                 }
                 intent.getStringExtra("text")?.let { app.converse(heard = it) }
                 if (intent.getBooleanExtra("talk", false)) app.onTrigger()
