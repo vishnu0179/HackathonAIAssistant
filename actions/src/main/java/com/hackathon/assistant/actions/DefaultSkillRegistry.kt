@@ -20,6 +20,12 @@ class DefaultSkillRegistry : SkillRegistry {
         DeviceStatusSkill(),
         MediaControlSkill(),
         // (list_apps is provided by AppSkills.listApps above)
+        // Wave 2 action skills
+        EmailSkill(),
+        AddCalendarEventSkill(),
+        ShareTextSkill(),
+        CalculatorSkill(),
+        RingerControlSkill(),
     ) + Skills.all
     private val byId = skills.associateBy { it.id }
 
