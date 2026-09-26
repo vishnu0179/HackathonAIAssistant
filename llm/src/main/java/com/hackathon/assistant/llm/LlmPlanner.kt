@@ -48,6 +48,7 @@ class LlmPlanner(private val llm: LocalLlm) : Planner {
             "scroll" -> StepDecision.Act(
                 UiAction.Scroll(id.takeIf { it >= 0 }, direction(json.optString("direction"))), reason,
             )
+            "enter" -> StepDecision.Act(UiAction.PressEnter, reason)
             "back" -> StepDecision.Act(UiAction.Back, reason)
             "home" -> StepDecision.Act(UiAction.Home, reason)
             "notifications" -> StepDecision.Act(UiAction.OpenNotifications, reason)

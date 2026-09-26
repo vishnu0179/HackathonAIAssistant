@@ -7,7 +7,9 @@ import com.hackathon.assistant.core.Risk
 import com.hackathon.assistant.core.RouteDecision
 import com.hackathon.assistant.core.SkillContext
 import com.hackathon.assistant.core.SkillRegistry
+import com.hackathon.assistant.core.ScreenState
 import com.hackathon.assistant.core.StepDecision
+import com.hackathon.assistant.core.UiAction
 import com.hackathon.assistant.core.VoiceIO
 
 /**
@@ -72,8 +74,15 @@ class Assistant(
                 is StepDecision.Act -> {
                     log("act ${step.action} (${step.reason})")
                     val result = skillContext.ui.perform(step.action, state)
-                    history += "${step.action} -> $result"
                     skillContext.screen.awaitIdle()
+                    val after = skillContext.screen.capture()
+                    val noEffect = after != null && after.elements == state.elements
+                    history += "${describe(step.action, state)} -> " +
+                        if (result is ActionResult.Failure) "failed: ${result.reason}"
+                        else if (noEffect) "NO EFFECT, screen unchanged" else "ok"
+                    if (history.size >= 3 && history.takeLast(3).distinct().size == 1) {
+                        return voice.speak("I'm stuck on this screen, so I stopped.")
+                    }
                 }
                 is StepDecision.Ask -> {
                     val answer = voice.ask(step.question) ?: return voice.speak("Okay, stopping.")
@@ -84,6 +93,21 @@ class Assistant(
             }
         }
         voice.speak("That took too many steps, so I stopped.")
+    }
+
+    /** "tap [5] \"lofi music\"": the model needs the label, ids change between screens. */
+    private fun describe(action: UiAction, state: ScreenState): String {
+        fun label(id: Int) = state.elements.firstOrNull { it.id == id }?.label?.let { "\"$it\"" } ?: "[$id]"
+        return when (action) {
+            is UiAction.Tap -> "tap ${label(action.elementId)}"
+            is UiAction.LongPress -> "long_press ${label(action.elementId)}"
+            is UiAction.TypeText -> "type \"${action.text}\" into ${label(action.elementId)}"
+            is UiAction.Scroll -> "scroll ${action.direction.name.lowercase()}"
+            UiAction.PressEnter -> "enter"
+            UiAction.Back -> "back"
+            UiAction.Home -> "home"
+            UiAction.OpenNotifications -> "notifications"
+        }
     }
 
     private fun log(msg: String) = Log.i(TAG, msg)

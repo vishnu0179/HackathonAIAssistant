@@ -12,6 +12,7 @@ import com.hackathon.assistant.core.UiAction
 import com.hackathon.assistant.core.UiAction.Direction
 import com.hackathon.assistant.core.UiController
 import com.hackathon.assistant.core.UiElement
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -23,8 +24,12 @@ class AccessibilityUiController : UiController {
             ?: return ActionResult.Failure("Accessibility service not connected")
         return when (action) {
             is UiAction.Tap -> withElement(on, action.elementId) { el, node ->
-                val target = node?.clickableSelfOrAncestor()
-                if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) ok("Tapped ${el.label}")
+                // Some apps (YouTube suggestions) accept ACTION_CLICK but ignore it. If the UI
+                // doesn't react, fall back to a real touch at the element's center.
+                val before = service.lastChangeAt
+                val clicked = node?.clickableSelfOrAncestor()?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                if (clicked) delay(CLICK_REACTION_MS)
+                if (clicked && service.lastChangeAt != before) ok("Tapped ${el.label}")
                 else gesture(service, tapPath(el), 60).result("Tapped ${el.label}")
             }
             is UiAction.LongPress -> withElement(on, action.elementId) { el, node ->
@@ -43,6 +48,12 @@ class AccessibilityUiController : UiController {
                 else ActionResult.Failure("Couldn't type into ${el.label}")
             }
             is UiAction.Scroll -> scroll(service, on, action)
+            UiAction.PressEnter -> {
+                val input = service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                    ?: return ActionResult.Failure("No text field is focused")
+                if (input.performAction(AccessibilityAction.ACTION_IME_ENTER.id)) ok("Pressed enter")
+                else ActionResult.Failure("Enter did nothing")
+            }
             UiAction.Back -> global(service, AccessibilityService.GLOBAL_ACTION_BACK, "Went back")
             UiAction.Home -> global(service, AccessibilityService.GLOBAL_ACTION_HOME, "Went home")
             UiAction.OpenNotifications ->
@@ -84,7 +95,7 @@ class AccessibilityUiController : UiController {
         return gesture(service, path, 300).result("Scrolled ${action.direction.name.lowercase()}")
     }
 
-    private inline fun withElement(
+    private suspend inline fun withElement(
         on: ScreenState,
         id: Int,
         block: (UiElement, AccessibilityNodeInfo?) -> ActionResult,
@@ -121,4 +132,6 @@ class AccessibilityUiController : UiController {
     private fun Boolean.result(msg: String) = if (this) ok(msg) else ActionResult.Failure("Gesture failed: $msg")
 
     private fun ok(msg: String) = ActionResult.Success(msg)
+
+    private companion object { const val CLICK_REACTION_MS = 600L }
 }

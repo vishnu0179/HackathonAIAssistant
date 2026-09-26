@@ -6,6 +6,8 @@ sealed interface UiAction {
     data class LongPress(val elementId: Int) : UiAction
     data class TypeText(val elementId: Int, val text: String) : UiAction
     data class Scroll(val elementId: Int?, val direction: Direction) : UiAction
+    /** Keyboard enter/search on the focused field. */
+    data object PressEnter : UiAction
     data object Back : UiAction
     data object Home : UiAction
     data object OpenNotifications : UiAction

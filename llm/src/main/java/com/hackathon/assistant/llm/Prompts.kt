@@ -34,10 +34,11 @@ internal object Prompts {
         appendLine(screen)
         appendLine(
             """
-            Actions: tap(id), long_press(id), type(id,text), scroll(id?,direction), back, home, notifications,
+            Actions: tap(id), long_press(id), type(id,text), enter (submit the focused field), scroll(id?,direction), back, home, notifications,
             ask(text) = ask the user a question when you need information only they have,
             done(text) = goal achieved; text is a short spoken summary, fail(text) = impossible; say why.
             Before sending, paying, deleting or posting, use ask to confirm with the user.
+            If an action had no effect, do NOT repeat it; try a different element or approach.
             Reply with JSON: {"action":..,"id":..,"text":..,"direction":..,"reason":<few words>}
             """.trimIndent(),
         )
@@ -50,7 +51,7 @@ internal object Prompts {
 "text":{"type":"string"}},"required":["type"]}"""
 
     const val STEP_SCHEMA = """{"type":"object","properties":{
-"action":{"type":"string","enum":["tap","long_press","type","scroll","back","home","notifications","ask","done","fail"]},
+"action":{"type":"string","enum":["tap","long_press","type","enter","scroll","back","home","notifications","ask","done","fail"]},
 "id":{"type":"integer"},
 "text":{"type":"string"},
 "direction":{"type":"string","enum":["up","down","left","right"]},

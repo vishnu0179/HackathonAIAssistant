@@ -98,7 +98,7 @@ internal object Skills {
     ) { args ->
         val q = args.getValue("query")
         launch(
-            Intent(Intent.ACTION_SEARCH).setPackage(YOUTUBE).putExtra("query", q),
+            Intent(Intent.ACTION_VIEW, uri("https://www.youtube.com/results?search_query=${enc(q)}")).setPackage(YOUTUBE),
             "",
             followUp = "Play the first video in the YouTube search results for \"$q\" (skip ads and Shorts shelves). Then done.",
         )
