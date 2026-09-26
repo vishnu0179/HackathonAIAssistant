@@ -38,8 +38,11 @@ class AccessibilityUiController : UiController {
             }
             is UiAction.TypeText -> withElement(on, action.elementId) { el, node ->
                 val input = node?.takeIf { it.isEditable }
-                    ?: service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                    ?: return@withElement ActionResult.Failure("${el.label} is not a text field")
+                    ?: focusedInput(service)
+                    ?: activateInput(service, on, el, node)
+                    ?: return@withElement ActionResult.Failure(
+                        "\"${el.label}\" is not a text field and tapping it opened none; tap the search box/button first",
+                    )
                 input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 val args = Bundle().apply {
                     putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, action.text)
@@ -59,6 +62,40 @@ class AccessibilityUiController : UiController {
             UiAction.OpenNotifications ->
                 global(service, AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "Opened notifications")
         }
+    }
+
+    private fun focusedInput(service: AssistantAccessibilityService): AccessibilityNodeInfo? =
+        service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+
+    /**
+     * Many search boxes (Play Store, YouTube, Maps) are buttons until tapped. Tap the chosen
+     * element, or if it is a mere label, the search-looking button on screen, wait for the UI,
+     * then use whatever text field got focus (or the only editable one).
+     */
+    private suspend fun activateInput(
+        service: AssistantAccessibilityService,
+        on: ScreenState,
+        el: UiElement,
+        node: AccessibilityNodeInfo?,
+    ): AccessibilityNodeInfo? {
+        val searchButton = on.elements.firstOrNull { it.clickable && it.label.contains("search", ignoreCase = true) && !it.label.contains("voice", ignoreCase = true) }
+        val target = if (el.clickable) el else searchButton ?: el
+        val targetNode = if (target === el) node else Snapshots.node(on, target.id)
+        if (targetNode?.clickableSelfOrAncestor()?.performAction(AccessibilityNodeInfo.ACTION_CLICK) != true) {
+            gesture(service, tapPath(target), 60)
+        }
+        repeat(15) {
+            delay(100)
+            focusedInput(service)?.let { return it }
+        }
+        return service.rootInActiveWindow?.let { firstEditable(it) }
+    }
+
+    private fun firstEditable(n: AccessibilityNodeInfo, depth: Int = 0): AccessibilityNodeInfo? {
+        if (n.isEditable && n.isVisibleToUser) return n
+        if (depth > 40) return null
+        for (i in 0 until n.childCount) n.getChild(i)?.let { c -> firstEditable(c, depth + 1)?.let { return it } }
+        return null
     }
 
     private suspend fun scroll(service: AssistantAccessibilityService, on: ScreenState, action: UiAction.Scroll): ActionResult {

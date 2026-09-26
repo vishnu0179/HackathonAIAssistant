@@ -74,59 +74,6 @@ internal object Skills {
         )
     }
 
-    val navigateTo = SimpleSkill(
-        "navigate_to", "Start turn-by-turn navigation in Google Maps",
-        listOf(slot("destination", "place or address", "Where do you want to go?")),
-        listOf("take me to the airport", "navigate to Charminar"),
-    ) { args ->
-        val dest = args.getValue("destination")
-        launch(Intent(Intent.ACTION_VIEW, uri("google.navigation:q=${enc(dest)}")).setPackage(MAPS), "Starting navigation to $dest")
-    }
-
-    val findPlace = SimpleSkill(
-        "find_place", "Find places on the map, e.g. restaurants or ATMs nearby",
-        listOf(slot("query", "what to look for", "What should I look for?")),
-        listOf("find biryani near me", "where is the nearest ATM"),
-    ) { args ->
-        launch(Intent(Intent.ACTION_VIEW, uri("geo:0,0?q=${enc(args.getValue("query"))}")).setPackage(MAPS), "Here's what I found")
-    }
-
-    val playYoutube = SimpleSkill(
-        "play_youtube", "Search and play a video on YouTube",
-        listOf(slot("query", "what to watch", "What should I play?")),
-        listOf("play lofi music on youtube", "show me cat videos"),
-    ) { args ->
-        val q = args.getValue("query")
-        launch(
-            Intent(Intent.ACTION_VIEW, uri("https://www.youtube.com/results?search_query=${enc(q)}")).setPackage(YOUTUBE),
-            "",
-            followUp = "Play the first video in the YouTube search results for \"$q\" (skip ads and Shorts shelves). Then done.",
-            doneWhen = musicPlaying(),
-        )
-    }
-
-    val playSpotify = SimpleSkill(
-        "play_spotify", "Play a song, artist or playlist on Spotify",
-        listOf(slot("query", "song, artist or playlist", "What should I play?")),
-        listOf("play arijit singh on spotify", "play some chill music"),
-    ) { args ->
-        val q = args.getValue("query")
-        launch(
-            Intent(Intent.ACTION_VIEW, uri("spotify:search:${enc(q)}")).setPackage(SPOTIFY),
-            "",
-            followUp = "Start playing the top result in the Spotify search results for \"$q\". Then done.",
-            doneWhen = musicPlaying(),
-        )
-    }
-
-    val webSearch = SimpleSkill(
-        "web_search", "Search the web in Chrome",
-        listOf(slot("query", "what to search", "What should I search for?")),
-        listOf("search for cricket score"),
-    ) { args ->
-        launch(Intent(Intent.ACTION_VIEW, uri("https://www.google.com/search?q=${enc(args.getValue("query"))}")), "Here are the results")
-    }
-
     val flashlight = SimpleSkill(
         "flashlight", "Turn the flashlight (torch) on or off",
         listOf(slot("state", "on or off", "On or off?")),
@@ -195,13 +142,9 @@ internal object Skills {
     }
 
     val all = listOf(
-        callContact, sendSms, setAlarm, setTimer, navigateTo, findPlace, playYoutube, playSpotify,
-        webSearch, flashlight, takePhoto, openSettings, volume, battery, dateTime,
+        callContact, sendSms, setAlarm, setTimer, flashlight, takePhoto, openSettings, volume, battery, dateTime,
     )
 
-    private const val MAPS = "com.google.android.apps.maps"
-    private const val YOUTUBE = "com.google.android.youtube"
-    private const val SPOTIFY = "com.spotify.music"
 
     private val SETTINGS_PAGES = linkedMapOf(
         "wifi" to Settings.ACTION_WIFI_SETTINGS, "wi-fi" to Settings.ACTION_WIFI_SETTINGS,

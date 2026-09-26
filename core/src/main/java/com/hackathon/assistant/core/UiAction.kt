@@ -32,6 +32,8 @@ sealed interface ActionResult {
         val doneWhen: (() -> Boolean)? = null,
         /** Package the skill brought to the front, so the agent can wait for it to appear. */
         val openedPackage: String? = null,
+        /** Data for the model only (e.g. the app list); [message] is what gets spoken. */
+        val observation: String? = null,
     ) : ActionResult
     data class Failure(val reason: String) : ActionResult
 }

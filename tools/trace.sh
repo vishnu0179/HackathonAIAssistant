@@ -6,7 +6,7 @@ mkdir -p traces
 OUT="traces/$(date +%H%M%S).log"
 adb logcat -c
 sh "$(dirname "$0")/say.sh" "$*"
-( adb logcat -v time -s Assistant LlmPlanner Prompt LiteRtLlm Voice AndroidRuntime > "$OUT" ) &
+( adb logcat -v time -s Assistant LlmPlanner Prompt LiteRtLlm Voice AppCatalog AndroidRuntime > "$OUT" ) &
 PID=$!
 # Stop when the agent has spoken its last line (or after 4 minutes).
 for i in $(seq 1 120); do

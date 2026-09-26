@@ -7,6 +7,8 @@ import com.hackathon.assistant.core.SkillRegistry
 class DefaultSkillRegistry : SkillRegistry {
     private val skills: List<Skill> = listOf<Skill>(
         OpenAppSkill(),
+        AppSkills.listApps,
+        AppSkills.openLink,
         SmsReaderSkill(),
         WhatsAppSkill(),
     ) + Skills.all

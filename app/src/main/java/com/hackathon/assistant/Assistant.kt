@@ -44,28 +44,41 @@ class Assistant(
         data object Stop : Outcome
     }
 
+    /** The skill run by the previous step; running it again right away is always a loop. */
+    private var lastSkill: String? = null
+
     suspend fun handle(utterance: String) {
         log("user: $utterance")
+        lastSkill = null
         val scratchpad = mutableListOf<String>()
         var doneWhen: (() -> Boolean)? = null
         repeat(MAX_STEPS) {
             if (doneWhen?.invoke() == true) return voice.speak("Done.")
             val state = skillContext.screen.capture()
             // Home-screen icons only distract the model from skills; show real app screens only.
-            val screenText = state
-                ?.takeIf { it.elements.isNotEmpty() && !isLauncher(it.packageName) }
-                ?.let(skillContext.screen::toPrompt)
+            val screenText = when {
+                state == null -> null
+                isLauncher(state.packageName) -> "Home screen (launcher). No app is open; open one first."
+                state.elements.isEmpty() -> "App: ${state.appLabel ?: state.packageName} (still loading, nothing readable yet)"
+                else -> skillContext.screen.toPrompt(state)
+            }
             val step = planner.next(utterance, tools, scratchpad, screenText)
                 ?: return voice.speak("Sorry, I got confused.")
             log("step ${scratchpad.size + 1} | screen: ${step.screen} | thought: ${step.thought} | -> ${step.tool}${step.args}${if (step.final) " (final)" else ""}")
 
             val outcome = run(step, state)
+            lastSkill = step.tool.takeIf { skills.get(it) != null && outcome is Outcome.Observed && outcome.ok }
             if (outcome is Outcome.Stop) return
             outcome as Outcome.Observed
             outcome.doneWhen?.let { doneWhen = it }
             log("   observation: ${outcome.text}")
-            scratchpad += "Screen: ${step.screen}\nThought: ${step.thought}\nAction: ${step.tool}${formatArgs(step.args)}\nObservation: ${outcome.text}"
-            if (step.final && outcome.ok) {
+            // The app list is large: show it for the next decision only, then collapse it.
+            if (scratchpad.isNotEmpty() && scratchpad.last().contains("Action: list_apps")) {
+                scratchpad[scratchpad.lastIndex] = scratchpad.last().substringBefore("Observation:") + "Observation: (app list was shown)"
+            }
+            scratchpad += "Screen: ${step.screen}\nThought: ${step.thought}\nAction: ${describe(step, state)}\nObservation: ${outcome.text}"
+            // Entering an app is never the end: the next step must look at where we landed.
+            if (step.final && outcome.ok && step.tool !in ENTRY_TOOLS) {
                 return voice.speak(outcome.spoken.ifBlank { "Done." })
             }
             if (scratchpad.size >= 3 && scratchpad.takeLast(3).map { it.substringAfter("Action: ") }.distinct().size == 1) {
@@ -84,6 +97,9 @@ class Assistant(
             else Outcome.Observed("User said: \"$answer\"", ok = true)
         }
         in UI_TOOL_NAMES -> runUi(step, state)
+        lastSkill -> Outcome.Observed(
+            "not run: ${step.tool} was just done. Work on the CURRENT screen with screen actions.", ok = false,
+        )
         else -> skills.get(step.tool)?.let { runSkill(it, step.args) }
             ?: Outcome.Observed("Unknown tool ${step.tool}", ok = false)
     }
@@ -109,7 +125,8 @@ class Assistant(
                     " " + landing(settle, now)
                 }.orEmpty()
                 val next = r.followUpGoal?.let { " Next: $it" }.orEmpty()
-                Outcome.Observed("ok. ${r.message}.$landed$next".trim(), ok = true, spoken = r.message, doneWhen = r.doneWhen)
+                val data = r.observation?.let { "\n$it" }.orEmpty()
+                Outcome.Observed("ok. ${r.message}.$landed$next$data".replace("ok. .", "ok.").trim(), ok = true, spoken = r.message, doneWhen = r.doneWhen)
             }
             is ActionResult.Failure -> Outcome.Observed("failed: ${r.reason}", ok = false)
         }
@@ -134,13 +151,18 @@ class Assistant(
 
         val mark = skillContext.screen.mark()
         val result = skillContext.ui.perform(action, state)   // returns once the action/gesture callback fired
-        if (result is ActionResult.Failure) return Outcome.Observed("failed: ${result.reason}", ok = false)
+        if (result is ActionResult.Failure) {
+            return Outcome.Observed("failed: ${result.reason}. Do NOT repeat this; pick a different element or action.", ok = false)
+        }
         val settle = skillContext.screen.awaitSettled(mark)   // UI reacted, then went quiet
         val after = skillContext.screen.capture()
         val target = id?.let { i -> state.elements.firstOrNull { it.id == i }?.label }?.let { " \"$it\"" }.orEmpty()
         val unchanged = settle == Settle.UNCHANGED || (after != null && after.elements == state.elements)
         return if (unchanged) Outcome.Observed("${step.tool}$target had NO EFFECT, screen unchanged", ok = false)
-        else Outcome.Observed("${step.tool}$target done. ${landing(settle, after, before = state)}", ok = true)
+        else {
+            val hint = if (step.tool == "type") " Now press enter or tap the matching suggestion." else ""
+            Outcome.Observed("${step.tool}$target done. ${landing(settle, after, before = state)}$hint", ok = true)
+        }
     }
 
     /** Where we ended up, in words the model can use: "Now in Google Play Store (new screen)." */
@@ -167,6 +189,22 @@ class Assistant(
     private fun direction(s: String?) =
         UiAction.Direction.entries.firstOrNull { it.name.equals(s, ignoreCase = true) } ?: UiAction.Direction.DOWN
 
+    /**
+     * History shows WHAT was acted on, never the numeric id: ids are only valid for the
+     * screen they came from, and a small model will happily reuse a stale one.
+     */
+    private fun describe(step: AgentStep, state: ScreenState?): String {
+        val id = step.args["id"]?.filter { it.isDigit() }?.toIntOrNull()
+        val label = id?.let { i -> state?.elements?.firstOrNull { it.id == i }?.label }
+        if (step.tool !in UI_TOOL_NAMES || id == null) return step.tool + formatArgs(step.args)
+        val rest = step.args.filterKeys { it != "id" }
+        val target = "\"${label ?: "missing element"}\""
+        return when (step.tool) {
+            "type" -> "type(\"${rest["text"].orEmpty()}\" into $target)"
+            else -> "${step.tool}($target${if (rest.isEmpty()) "" else ", " + rest.entries.joinToString { "${it.key}=${it.value}" }})"
+        }
+    }
+
     private fun formatArgs(args: Map<String, String>) =
         if (args.isEmpty()) "()" else args.entries.joinToString(", ", "(", ")") { "${it.key}=\"${it.value}\"" }
 
@@ -192,5 +230,6 @@ class Assistant(
             ToolSpec("finish", "end the request; also use it to answer questions yourself", listOf(p("answer", "short spoken reply"))),
         )
         private val UI_TOOL_NAMES = UI_TOOLS.map { it.name }.toSet()
+        private val ENTRY_TOOLS = setOf("list_apps", "open_link")
     }
 }

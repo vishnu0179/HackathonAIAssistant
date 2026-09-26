@@ -1,7 +1,6 @@
 package com.hackathon.assistant.actions
 
 import android.content.Intent
-import android.media.AudioManager
 import android.net.Uri
 import com.hackathon.assistant.core.ActionResult
 import com.hackathon.assistant.core.Risk
@@ -40,10 +39,3 @@ internal fun SkillContext.launch(
 
 internal fun uri(s: String): Uri = Uri.parse(s)
 internal fun enc(s: String): String = Uri.encode(s)
-
-/** True once any app is playing audio; ends "play X" navigation without asking the model. */
-internal fun SkillContext.musicPlaying(): () -> Boolean {
-    val am = android.getSystemService(AudioManager::class.java)
-    val wasPlaying = am.isMusicActive
-    return { !wasPlaying && am.isMusicActive }
-}

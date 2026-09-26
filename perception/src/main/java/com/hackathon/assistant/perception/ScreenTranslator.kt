@@ -28,7 +28,7 @@ internal class ScreenTranslator(private val screen: Rect) {
         roots.forEach { collectTexts(it, depth = 0) }
         val raws = mutableListOf<Raw>()
         roots.forEach { visit(it, raws, depth = 0) }
-        val unique = raws.distinctBy { Triple(it.role, it.label, it.rect) }
+        val unique = withCardContext(raws).distinctBy { Triple(it.role, it.label, it.rect) }
             .sortedWith(compareBy({ it.rect.top / ROW_BUCKET_PX }, { it.rect.left }))
             .take(MAX_ELEMENTS)
         val elements = ArrayList<UiElement>(unique.size)
@@ -77,6 +77,40 @@ internal class ScreenTranslator(private val screen: Rect) {
             ownLabel(node)?.let(::clean)?.let { out += Raw(node, textRole(node), it.take(MAX_LABEL), null, rect) }
         }
         for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, out, depth + 1) }
+    }
+
+    /**
+     * A list of cards flattens into many identical `button "Install"` lines that the model
+     * cannot tell apart (it installed a sponsored app that way). Generic or repeated button
+     * labels get the title of their own card: `button "Install · WhatsApp Messenger"`.
+     */
+    private fun withCardContext(raws: List<Raw>): List<Raw> {
+        val counts = raws.groupingBy { it.label.lowercase() }.eachCount()
+        return raws.map { r ->
+            val generic = r.label.lowercase() in GENERIC_LABELS || (counts.getValue(r.label.lowercase()) > 1 && r.label.length <= 24)
+            if (r.role == Role.TEXT || r.label.isEmpty() || !generic) r
+            else cardTitle(r.node, r.label)?.let { r.copy(label = "${r.label} · $it".take(MAX_LABEL + 20)) } ?: r
+        }
+    }
+
+    /** First text in the nearest enclosing container, outside the button itself. */
+    private fun cardTitle(button: AccessibilityNodeInfo, ownLabel: String): String? {
+        var child = button
+        var parent = button.parent
+        repeat(CARD_LEVELS) {
+            val p = parent ?: return null
+            for (i in 0 until p.childCount) {
+                val c = p.getChild(i) ?: continue
+                if (c == child) continue
+                // A neighbouring short button ("Always" next to "Just once") is not a card title.
+                if (c.isClickable && (ownLabel(c)?.split(' ')?.size ?: 0) <= 2) continue
+                val text = (ownLabel(c) ?: descendantText(c)).takeIf { it.isNotBlank() && !it.equals(ownLabel, true) }
+                if (text != null) return clean(text)?.take(40)
+            }
+            child = p
+            parent = p.parent
+        }
+        return null
     }
 
     private fun collectTexts(node: AccessibilityNodeInfo, depth: Int) {
@@ -161,6 +195,11 @@ internal class ScreenTranslator(private val screen: Rect) {
         const val MAX_LABEL = 60
         const val ROW_BUCKET_PX = 24
         val WHITESPACE = Regex("\\s+")
+        const val CARD_LEVELS = 3
+        val GENERIC_LABELS = setOf(
+            "install", "open", "update", "uninstall", "cancel", "buy", "get", "add", "follow", "play",
+            "download", "share", "like", "delete", "remove", "more options", "more", "view", "select", "join",
+        )
         val LAYOUT_WORDS = listOf("layout", "container", "view", "root", "content", "wrapper", "frame", "panel", "holder")
     }
 }
