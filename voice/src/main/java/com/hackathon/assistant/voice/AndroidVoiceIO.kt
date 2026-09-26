@@ -106,13 +106,22 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
      * back to en-US. The working language is remembered.
      */
     private suspend fun recognizeOnce(timeoutMs: Long): String? = withContext(Dispatchers.Main) {
-        for (lang in LANGUAGES.drop(languageIndex)) {
+        var transientRetries = 0
+        var i = languageIndex
+        while (i < LANGUAGES.size) {
+            val lang = LANGUAGES[i]
             when (val heard = recognize(timeoutMs, lang)) {
                 is Heard.Text -> return@withContext heard.text
                 Heard.Nothing -> return@withContext null
+                // Recognizer still busy/closing right after TTS or a previous session: retry.
+                Heard.Transient -> {
+                    if (transientRetries++ >= 2) return@withContext null
+                    kotlinx.coroutines.delay(350)
+                }
                 Heard.LanguageUnavailable -> {
                     requestDownload(lang)
                     languageIndex++
+                    i++
                 }
             }
         }
@@ -134,6 +143,7 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
         data class Text(val text: String) : Heard
         data object Nothing : Heard
         data object LanguageUnavailable : Heard
+        data object Transient : Heard
     }
 
     private suspend fun recognize(timeoutMs: Long, lang: String): Heard = suspendCancellableCoroutine { cont ->
@@ -156,7 +166,15 @@ class AndroidVoiceIO(private val context: Context) : VoiceIO {
                 val unavailable = error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
                     error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
                     (useOnDevice && error == SpeechRecognizer.ERROR_CLIENT)
-                if (cont.isActive) cont.resume(if (unavailable) Heard.LanguageUnavailable else Heard.Nothing)
+                val transient = error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED ||
+                    error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_SERVER
+                if (cont.isActive) cont.resume(
+                    when {
+                        unavailable -> Heard.LanguageUnavailable
+                        transient -> Heard.Transient
+                        else -> Heard.Nothing
+                    },
+                )
             }
             override fun onEndOfSpeech() { tones.startTone(ToneGenerator.TONE_PROP_ACK, 80) }
             override fun onBeginningOfSpeech() = Unit

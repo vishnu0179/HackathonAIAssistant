@@ -112,44 +112,76 @@ class Assistant(
     }
 
     /**
-     * Asks the user for a field's value by voice and types it. Spoken words are converted to the
-     * field's format (digits, email). Password/PIN fields are never heard or typed by us: the
-     * user types them and says "done".
+     * Collects EVERY empty input on the screen by voice before the agent moves on: the field
+     * the model chose first, then the rest top to bottom, passwords last (typed by the user).
+     * Spoken words are converted to the field's format. The user can say "skip" per field.
      */
     private suspend fun fillField(step: AgentStep, state: ScreenState?): Outcome {
         state ?: return Outcome.Observed("failed: screen not readable", ok = false)
-        val id = step.args["id"]?.filter { it.isDigit() }?.toIntOrNull()
-        val el = state.elements.firstOrNull { it.id == id && it.editable }
-            ?: state.elements.firstOrNull { it.editable && it.value.isNullOrEmpty() }
-            ?: return Outcome.Observed("failed: no input field on this screen. Do NOT repeat this.", ok = false)
-        val what = el.label.ifBlank { "this field" }
+        val chosenId = step.args["id"]?.filter { it.isDigit() }?.toIntOrNull()
+        val empties = state.elements.filter { it.editable && it.value.isNullOrEmpty() }
+        if (empties.isEmpty()) return Outcome.Observed("failed: no empty input on this screen. Do NOT repeat this.", ok = false)
+        val ordered = (empties.filter { it.id == chosenId } + empties.filter { it.id != chosenId })
+            .sortedBy { it.inputKind == InputKind.PASSWORD }
+        val labels = ordered.map { it.label }
 
-        if (el.inputKind == InputKind.PASSWORD) {
-            voice.speak("Please type your $what yourself, then say done.")
-            repeat(3) {
-                val heard = voice.listen(timeoutMs = 20_000)?.lowercase().orEmpty()
-                if (heard.contains("done") || heard.contains("ok") || heard.contains("next")) {
-                    return Outcome.Observed("user typed \"$what\" themselves. Continue (e.g. tap Next/Sign in).", ok = true)
+        val filled = mutableListOf<String>()
+        val skipped = mutableListOf<String>()
+        for ((i, label) in labels.withIndex()) {
+            // Ids can shift after typing (fields appear/disappear), so re-find the field by label.
+            val now = if (i == 0) state else skillContext.screen.capture() ?: break
+            val el = now.elements.firstOrNull { it.editable && it.label == label && it.value.isNullOrEmpty() } ?: continue
+            val name = fieldName(label)
+            if (el.inputKind == InputKind.PASSWORD) {
+                when (passwordHandOff(name)) {
+                    true -> filled += "$name (typed by user)"
+                    false -> skipped += name
+                    null -> return Outcome.Stop
                 }
-                if (heard.contains("cancel") || heard.contains("stop")) { voice.speak("Okay, stopping."); return Outcome.Stop }
+                continue
             }
-            voice.speak("I'll stop here. Tell me when you're ready.")
-            return Outcome.Stop
+            val question = if (i == 0) step.args["question"]?.takeIf { it.isNotBlank() } ?: "What's your $name?" else "What's your $name?"
+            // One re-ask on silence before giving up: people often answer a beat late.
+            val spoken = voice.ask(question) ?: voice.ask("Sorry, I didn't catch that. $question")
+                ?: run { voice.speak("Okay, stopping."); return Outcome.Stop }
+            val lower = spoken.lowercase().trim()
+            if (lower in CANCEL_WORDS) { voice.speak("Okay, stopping."); return Outcome.Stop }
+            if (lower in SKIP_WORDS) { skipped += name; continue }
+            val value = SpokenInput.normalize(spoken, el.inputKind)
+            log("   fill \"$name\" (${el.inputKind}): heard \"$spoken\" -> \"$value\"")
+            if (value.isBlank()) { skipped += "$name (not understood)"; continue }
+            val mark = skillContext.screen.mark()
+            if (skillContext.ui.perform(UiAction.TypeText(el.id, value), now) is ActionResult.Failure) {
+                skipped += "$name (couldn't type)"; continue
+            }
+            skillContext.screen.awaitSettled(mark, timeoutMs = 2_000)
+            SpokenInput.readBack(value, el.inputKind)?.let { voice.speak("Got $it.") }
+            filled += "$name = \"$value\""
         }
-
-        val question = step.args["question"]?.takeIf { it.isNotBlank() } ?: "What should I enter for $what?"
-        val spoken = voice.ask(question) ?: run { voice.speak("Okay, stopping."); return Outcome.Stop }
-        val value = SpokenInput.normalize(spoken, el.inputKind)
-        log("   fill \"$what\" (${el.inputKind}): heard \"$spoken\" -> \"$value\"")
-        if (value.isBlank()) return Outcome.Observed("failed: couldn't understand the answer \"$spoken\"", ok = false)
-
-        val mark = skillContext.screen.mark()
-        val result = skillContext.ui.perform(UiAction.TypeText(el.id, value), state)
-        if (result is ActionResult.Failure) return Outcome.Observed("failed: ${result.reason}", ok = false)
-        skillContext.screen.awaitSettled(mark, timeoutMs = 2_000)
-        SpokenInput.readBack(value, el.inputKind)?.let { voice.speak("Got $it.") }
-        return Outcome.Observed("filled \"$what\" with \"$value\". Fill the next empty field or continue.", ok = true)
+        val summary = buildString {
+            if (filled.isNotEmpty()) append("filled ").append(filled.joinToString(", ")).append(". ")
+            if (skipped.isNotEmpty()) append("skipped ").append(skipped.joinToString(", ")).append(". ")
+            append("All inputs on this screen are handled; continue with the next step of the goal.")
+        }
+        return Outcome.Observed(summary, ok = filled.isNotEmpty())
     }
+
+    /** true = user typed it, false = skipped, null = stop the task. Never heard or typed by us. */
+    private suspend fun passwordHandOff(name: String): Boolean? {
+        voice.speak("Please type your $name yourself, then say done.")
+        repeat(3) {
+            val heard = voice.listen(timeoutMs = 20_000)?.lowercase().orEmpty()
+            if (listOf("done", "ok", "next", "finished").any { it in heard }) return true
+            if (SKIP_WORDS.any { it in heard }) return false
+            if (CANCEL_WORDS.any { it in heard }) { voice.speak("Okay, stopping."); return null }
+        }
+        voice.speak("I'll stop here. Tell me when you're ready.")
+        return null
+    }
+
+    /** "Country code, none selected" -> "country code". */
+    private fun fieldName(label: String) =
+        label.substringBefore(',').substringBefore(" · ").trim().lowercase().ifBlank { "this field" }
 
     private suspend fun runSkill(skill: Skill, given: Map<String, String>): Outcome {
         val args = given.filterValues { it.isNotBlank() }.toMutableMap()
@@ -275,7 +307,7 @@ class Assistant(
         val TALK_TOOLS = listOf(
             ToolSpec(
                 "fill_field",
-                "ask the user by voice for a value the screen needs (name, phone, email, OTP, address, password) and type it in",
+                "ask the user by voice for ALL empty inputs on this screen (name, phone, email, OTP, address, password) and type them in",
                 listOf(p("id", "input element id"), p("question", "short spoken question, e.g. What's your phone number?")),
             ),
             ToolSpec("ask_user", "ask the user a question (missing info, or confirm before send/pay/delete)", listOf(p("question", "short spoken question"))),
@@ -283,5 +315,7 @@ class Assistant(
         )
         private val UI_TOOL_NAMES = UI_TOOLS.map { it.name }.toSet()
         private val ENTRY_TOOLS = setOf("list_apps", "open_link")
+        private val SKIP_WORDS = setOf("skip", "skip it", "leave it", "no", "none", "not needed", "next one")
+        private val CANCEL_WORDS = setOf("cancel", "stop", "stop it")
     }
 }
