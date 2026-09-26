@@ -68,11 +68,12 @@ internal class ScreenTranslator(private val screen: Rect) {
         }
 
         if (node.isActionable()) {
-            val own = ownLabel(node)
+            // For inputs the text is the VALUE; the label is the hint/description ("Phone number").
+            val own = if (node.isEditable) inputLabel(node) else ownLabel(node)
             val label = (
                 own ?: descendantText(node).takeIf { it.isNotBlank() } ?: overlayText(rect) ?: resourceName(node)
                 )?.let(::clean)
-            val value = node.text?.toString()?.takeIf { node.isEditable && it.isNotBlank() && it != label }
+            val value = node.text?.toString()?.takeIf { node.isEditable && !node.isShowingHintText && it.isNotBlank() && it != label }
             if (label != null || node.isEditable || node.isScrollable) {
                 out += Raw(node, roleOf(node), (label ?: "").take(MAX_LABEL), value?.take(MAX_LABEL), rect)
             }
@@ -143,6 +144,11 @@ internal class ScreenTranslator(private val screen: Rect) {
         }
         return false
     }
+
+    private fun inputLabel(n: AccessibilityNodeInfo): String? =
+        listOf(n.hintText, n.contentDescription, n.paneTitle)
+            .firstOrNull { !it.isNullOrBlank() && it.toString() != "null" }?.toString()?.trim()?.replace(WHITESPACE, " ")
+            ?: n.text?.toString()?.takeIf { !n.isShowingHintText && it.isBlank() }
 
     private fun ownLabel(n: AccessibilityNodeInfo): String? =
         listOf(n.text, n.contentDescription, n.hintText)
